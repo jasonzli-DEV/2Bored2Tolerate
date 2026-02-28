@@ -131,6 +131,7 @@ class ProxyManager extends EventEmitter {
 
     this.stoppedByPlayer = false;
     this._log('Starting queue...');
+    this.queueHistory = []; // Reset chart history for each fresh queue session
     this._cleanup();
 
     // Check for cached auth tokens
@@ -606,12 +607,13 @@ class ProxyManager extends EventEmitter {
         port: config.server.port,
       },
       (err) => {
+        // User may have called stop() while the ping was in flight – respect that
+        if (this.stoppedByPlayer) return;
         if (err) {
           this._log('Server not responding, retrying in 3s...', 'warn');
           this.reconnectTimer = setTimeout(() => this._reconnect(), 3000);
         } else {
           this._log('Server is up, starting queue...');
-          this.stoppedByPlayer = false;
           this.start();
         }
       }

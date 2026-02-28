@@ -50,9 +50,7 @@ function filterHistory(history, tf) {
   const windowMs = { '15m': 15 * 60000, '30m': 30 * 60000, '1h': 60 * 60000 }[tf];
   if (!windowMs) return history;
   const cutoff = Date.now() - windowMs;
-  const filtered = history.filter((p) => p.time >= cutoff);
-  // If the timeframe is longer than the actual data, show everything gracefully
-  return filtered.length >= 2 ? filtered : history;
+  return history.filter((p) => p.time >= cutoff);
 }
 
 /** Switch the chart timeframe and redraw */
@@ -61,7 +59,7 @@ function setChartTimeframe(tf) {
   document.querySelectorAll('.chart-tf-btn').forEach((btn) => {
     btn.classList.toggle('active', btn.dataset.tf === tf);
   });
-  if (currentState.queueHistory?.length > 1) {
+  if (currentState.queueHistory) {
     const filtered = filterHistory(currentState.queueHistory, tf);
     drawChart(filtered);
     updateChartTimespan(filtered);
@@ -391,7 +389,16 @@ function drawChart(history) {
   // Clear
   ctx.clearRect(0, 0, w, h);
 
-  if (history.length < 2) return;
+  if (history.length < 2) {
+    // Show placeholder when not enough data for the selected timeframe
+    _chartPoints = [];
+    ctx.fillStyle = 'rgba(255,255,255,0.2)';
+    ctx.font = `${Math.round(h * 0.14)}px -apple-system, sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('No data for this timeframe', w / 2, h / 2);
+    return;
+  }
 
   const positions = history.map((h) => h.position);
   let maxPos = Math.max(...positions) * 1.1;
