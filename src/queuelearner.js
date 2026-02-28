@@ -31,8 +31,7 @@ const RELOG_THRESHOLD = getFlag('--relog', 30);
 const STATUS_INTERVAL = 30_000;   // ms between [STATUS] lines
 const RUN_DURATION_MS = MAX_DAYS * 24 * 60 * 60 * 1000;
 
-const learner = new ETALearner();
-learner.load();
+const learner = new ETALearner(); // constructor calls _load() automatically
 
 // ── Session state ─────────────────────────────────────────────────────────────
 let client          = null;
@@ -107,6 +106,29 @@ function stopStatusTicker() {
   if (statusTimer) { clearInterval(statusTimer); statusTimer = null; }
 }
 
+function saveSession(entryMs, entryPos, exitPos) {
+  const exitMs = Date.now();
+  const durationMs = exitMs - entryMs;
+  if (durationMs < 2 * 60 * 1000) return; // ignore very short sessions
+  const durationHours = durationMs / 3_600_000;
+  const moved = entryPos - exitPos;
+  if (moved <= 0) return;
+  const positionsPerHour = Math.round(moved / durationHours);
+  if (positionsPerHour <= 0 || positionsPerHour > 10000) return;
+  const date = new Date(entryMs);
+  learner.sessions.push({
+    startPos: entryPos,
+    startTimeMs: entryMs,
+    endTimeMs: exitMs,
+    durationMs,
+    dayOfWeek: date.getDay(),
+    startHour: date.getHours(),
+    positionsPerHour,
+  });
+  if (learner.sessions.length > 500) learner.sessions.shift();
+  learner._save();
+}
+
 // ── Connect ───────────────────────────────────────────────────────────────────
 function connectToQueue() {
   logger.info('Connecting to ' + config.server.host + ':' + config.server.port + ' ...');
@@ -165,8 +187,7 @@ function connectToQueue() {
         : '~' + hm(durationMs) + ' session';
       logger.info('Position #' + pos + ' <= ' + RELOG_THRESHOLD +
         ' — saving session and re-queueing  (' + summary + ')');
-      learner.recordSession(sessionEntryMs, sessionEntryPos, pos);
-      learner.save();
+      saveSession(sessionEntryMs, sessionEntryPos, pos);
       stopStatusTicker();
       sessionEntryPos = null;
       sessionEntryMs  = null;
@@ -200,8 +221,7 @@ function onDisconnect(reason) {
 
   // Save partial session data if meaningful progress was made
   if (sessionEntryPos !== null && currentPos !== null && currentPos < sessionEntryPos) {
-    learner.recordSession(sessionEntryMs, sessionEntryPos, currentPos);
-    learner.save();
+    saveSession(sessionEntryMs, sessionEntryPos, currentPos);
     logger.info('Partial session saved (#' + sessionEntryPos + ' -> #' + currentPos + ')');
   }
   sessionEntryPos = null;
@@ -225,7 +245,7 @@ function shutdown() {
   stopStatusTicker();
   if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
   if (client)         { client.end(); client = null; }
-  learner.save();
+  learner._save();
   logger.info('queuelearner shut down.');
   process.exit(0);
 }
