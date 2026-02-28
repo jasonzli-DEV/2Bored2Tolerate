@@ -11,6 +11,7 @@ const path = require('path');
 const config = require('./config');
 const logger = require('./logger');
 const AntiAFK = require('./antiafk');
+const ETALearner = require('./eta-learner');
 
 const QUEUE_DATA_PATH = path.join(__dirname, '..', 'data', 'queue.json');
 const C = 150; // Constant for queue time estimation
@@ -38,6 +39,9 @@ class ProxyManager extends EventEmitter {
 
     // Ensure data directories exist
     this._ensureDataDirs();
+
+    // Smart ETA learner (loads historical data on construction)
+    this.etaLearner = new ETALearner();
 
     // Load queue data for ETA estimation
     try {
@@ -111,9 +115,10 @@ class ProxyManager extends EventEmitter {
     return {
       ...this.state,
       logs: this._logs.slice(-50),
-      queueHistory: this.queueHistory.slice(-60),
+      queueHistory: this.queueHistory.slice(), // full history for client-side timeframe filtering
       proxyAddress: `localhost:${config.proxy.port}`,
       version: APP_VERSION,
+      etaLearnedSessions: this.etaLearner.sessions.length,
     };
   }
 
@@ -127,6 +132,9 @@ class ProxyManager extends EventEmitter {
     this.stoppedByPlayer = false;
     this._log('Starting queue...');
     this._cleanup();
+
+    // Check for cached auth tokens
+    this._checkCachedAuth();
 
     this._updateState({
       doing: 'auth',
@@ -316,13 +324,21 @@ class ProxyManager extends EventEmitter {
             if (lastQueuePlace === 'None') {
               this.queueStartPlace = positionInQueue;
               this.queueStartTime = DateTime.local();
+              this.etaLearner.beginSession(positionInQueue);
+              this._log(`ETA learner: ${this.etaLearner.summary()}`);
             }
 
+            // Feed sample to live rate tracker
+            this.etaLearner.recordSample(positionInQueue);
+
             if (lastQueuePlace !== positionInQueue) {
-              // Calculate ETA
+              // Calculate base ETA from exponential decay model
               const totalWait = this._getWaitTime(this.queueStartPlace, 0);
               const elapsed = this._getWaitTime(this.queueStartPlace, positionInQueue);
-              const etaMinutes = (totalWait - elapsed) / 60;
+              const baseMinutes = (totalWait - elapsed) / 60;
+
+              // Blend with learned data
+              const etaMinutes = this.etaLearner.estimateMinutes(positionInQueue, baseMinutes);
 
               const eta = `${Math.floor(etaMinutes / 60)}h ${Math.floor(etaMinutes % 60)}m`;
               const finTime = new Date(Date.now() + etaMinutes * 60000).toISOString();
@@ -334,12 +350,12 @@ class ProxyManager extends EventEmitter {
                 } catch (e) { /* ignore */ }
               }
 
-              // Track history for chart
+              // Track history for chart (keep up to 720 data points ≈ 12h at 1/min)
               this.queueHistory.push({
                 time: Date.now(),
                 position: positionInQueue,
               });
-              if (this.queueHistory.length > 120) this.queueHistory.shift();
+              if (this.queueHistory.length > 720) this.queueHistory.shift();
 
               this._updateState({
                 queuePlace: positionInQueue,
@@ -439,6 +455,9 @@ class ProxyManager extends EventEmitter {
   /** Internal: handle queue completion */
   _handleQueueFinished() {
     this._log('Queue finished! Connected to server.');
+
+    // Record this session so ETA estimates improve over time
+    this.etaLearner.recordCompletedSession();
 
     // Save queue data for ETA improvement
     if (config.expandQueueData && this.queueStartPlace && this.queueStartTime) {
@@ -608,6 +627,22 @@ class ProxyManager extends EventEmitter {
       } catch (e) {
         // Connection may have closed
       }
+    }
+  }
+
+  /** Check for cached Microsoft auth tokens and log status */
+  _checkCachedAuth() {
+    if (!config.mc.email || config.mc.authType !== 'microsoft') return;
+    try {
+      const files = fs.readdirSync(config.mc.profilesFolder).filter((f) => f.endsWith('.json'));
+      if (files.length > 0) {
+        this._log(`Found cached auth in ${config.mc.profilesFolder} – attempting token reuse (no sign-in needed unless expired)`);
+      } else {
+        this._log('No cached auth tokens found – Microsoft device-code sign-in will be required');
+      }
+    } catch {
+      // Folder doesn't exist yet; auth will create it
+      this._log('No cached auth tokens found – Microsoft device-code sign-in will be required');
     }
   }
 

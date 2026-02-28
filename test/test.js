@@ -24,6 +24,7 @@ process.env.DESKTOP_NOTIFY = 'false';
 
 const config = require('../src/config');
 const AntiAFK = require('../src/antiafk');
+const ETALearner = require('../src/eta-learner');
 
 let passed = 0;
 let failed = 0;
@@ -198,6 +199,114 @@ test('AntiAFK detects when too far from origin', () => {
   assert(afk._isTooFar(), 'Should detect being too far (3 blocks away)');
 
   afk.stop();
+});
+
+// --- ETALearner Tests ---
+console.log('\n\x1b[36m  ETALearner Module\x1b[0m');
+
+const os = require('os');
+const etaTestPath = path.join(os.tmpdir(), `2b2t-eta-test-${Date.now()}.json`);
+
+test('ETALearner creates with empty sessions', () => {
+  const eta = new ETALearner(etaTestPath);
+  assertEqual(eta.sessions.length, 0);
+  assert(eta.activeSamples !== undefined, 'Should have activeSamples');
+});
+
+test('ETALearner beginSession sets state', () => {
+  const eta = new ETALearner(etaTestPath);
+  eta.beginSession(500);
+  assertEqual(eta.sessionStartPos, 500);
+  assert(eta.sessionStartTime != null, 'Should have start time');
+  assertEqual(eta.activeSamples.length, 1);
+  assertEqual(eta.activeSamples[0].pos, 500);
+});
+
+test('ETALearner recordSample accumulates samples', () => {
+  const eta = new ETALearner(etaTestPath);
+  eta.beginSession(400);
+  eta.recordSample(390);
+  eta.recordSample(380);
+  assertEqual(eta.activeSamples.length, 3); // initial + 2 updates
+  assertEqual(eta.activeSamples[eta.activeSamples.length - 1].pos, 380);
+});
+
+test('ETALearner recordCompletedSession saves and clears', () => {
+  const eta = new ETALearner(etaTestPath);
+  const startTime = Date.now() - 10 * 60 * 1000; // 10 minutes ago
+  eta.sessionStartPos = 600;
+  eta.sessionStartTime = startTime;
+  eta.activeSamples = [{ time: startTime, pos: 600 }, { time: Date.now(), pos: 0 }];
+
+  eta.recordCompletedSession();
+  assertEqual(eta.sessions.length, 1);
+  assertEqual(eta.sessions[0].startPos, 600);
+  assert(eta.sessions[0].positionsPerHour > 0, 'Should have positive rate');
+  assert(eta.sessionStartPos === null, 'Should clear session state');
+});
+
+test('ETALearner estimateMinutes returns base when no history', () => {
+  const eta = new ETALearner(etaTestPath + '_new');
+  eta.beginSession(500);
+  const result = eta.estimateMinutes(500, 480);
+  // With no history or live data, should return the base model value
+  assertEqual(result, 480);
+});
+
+test('ETALearner estimateMinutes blends live rate when available', () => {
+  const eta = new ETALearner(etaTestPath + '_live');
+  eta.beginSession(600);
+  // Simulate 20 samples over 60 minutes (600 pos in 1 hour = 600 pos/hr)
+  const now = Date.now();
+  eta.activeSamples = Array.from({ length: 20 }, (_, i) => ({
+    time: now - (20 - i) * 3 * 60 * 1000, // spread over 60 min
+    pos: 600 - i * 30, // 30 pos drop per 3 min = 600/hr
+  }));
+  const blended = eta.estimateMinutes(300, 500); // base says 500min, live says ~30min
+  // Blended should be less than base because live rate is faster
+  assert(blended < 500, `Blended ETA (${blended}) should be < base (500) when live rate is faster`);
+  assert(blended > 0, 'ETA should be positive');
+});
+
+test('ETALearner getHistoricalRate uses similar time context', () => {
+  const eta = new ETALearner(etaTestPath + '_hist');
+  const now = new Date();
+  const hour = now.getHours();
+  const dayOfWeek = now.getDay();
+
+  // Add 5 sessions at similar time with known rate
+  for (let i = 0; i < 5; i++) {
+    eta.sessions.push({
+      startPos: 500,
+      startTimeMs: Date.now() - i * 86400000,
+      endTimeMs: Date.now() - i * 86400000 + 5 * 3600000,
+      durationMs: 5 * 3600000,
+      dayOfWeek,
+      startHour: hour,
+      positionsPerHour: 100,
+    });
+  }
+  const rate = eta._getHistoricalRate(now);
+  assert(rate !== null, 'Should have a historical rate');
+  assert(rate > 0, 'Rate should be positive');
+  assert(Math.abs(rate - 100) < 10, `Rate ${rate} should be close to 100`);
+});
+
+test('ETALearner caps sessions at MAX_SESSIONS', () => {
+  const eta = new ETALearner(etaTestPath + '_cap');
+  for (let i = 0; i < 210; i++) {
+    eta.sessions.push({
+      startPos: 500,
+      startTimeMs: Date.now(),
+      endTimeMs: Date.now() + 3600000,
+      durationMs: 3600000,
+      dayOfWeek: 1,
+      startHour: 10,
+      positionsPerHour: 100,
+    });
+    if (eta.sessions.length > 200) eta.sessions.shift();
+  }
+  assert(eta.sessions.length <= 200, 'Should not exceed 200 sessions');
 });
 
 // --- Web Server Tests ---

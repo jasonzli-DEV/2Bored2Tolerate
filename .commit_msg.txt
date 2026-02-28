@@ -1,0 +1,37 @@
+feat: smart ETA learning, chart timeframes, graph hover, auth token reuse
+
+Graph (Tasks 1 & 2):
+- Add timeframe buttons [15m / 30m / 1h / All] to chart card header
+- Client-side history filtering; gracefully falls back to full history when
+  the selected window is longer than actual queue time
+- Drop server-side slice(-60) limit; full 720-point history now sent to client
+  so timeframe filtering works correctly
+- Add canvas hover tooltip showing exact queue position and timestamp;
+  correct retina (2x) coordinate scaling
+- Store rendered data point coordinates for efficient nearest-point lookup
+
+Smart ETA learning (Task 3):
+- New src/eta-learner.js module stores completed session data locally in
+  data/eta-learn.json (up to 200 sessions, never leaves the machine)
+- Tracks day-of-week and hour-of-day context per session
+- Three-source blended estimate:
+    1. Exponential decay base model (always contributes)
+    2. Historical rate from similar time/day sessions (weighted by recency)
+    3. Live rate observed from the current session (grows in weight as more
+       samples are collected)
+- Weights adapt: more historical data = more confident learned estimate
+- ETALearner accepts optional dataPath for clean unit testing
+- 8 new tests; all 34 tests pass
+
+Auth token reuse (Task 4):
+- _checkCachedAuth() scans profilesFolder before each queue start
+- Logs "Found cached auth ... attempting token reuse" vs
+  "No cached tokens found - device-code sign-in required"
+- Actual reuse already worked via node-minecraft-protocol's MSAL cache;
+  this adds clear user feedback
+
+Codebase review fixes:
+- server.js stateChange now sends full queueHistory (was still sliced to 60)
+- proxy.js queueHistory cap raised from 120 to 720 (~12h at 1 update/min)
+- ETALearner integrated into proxy.js: beginSession, recordSample,
+  estimateMinutes, recordCompletedSession all wired up correctly

@@ -87,10 +87,19 @@
     <div class="card chart-card" id="chartCard" style="display:none">
       <div class="card-label">
         QUEUE PROGRESS
-        <span class="chart-timespan" id="chartTimespan"></span>
+        <div class="chart-controls">
+          <div class="chart-tf-group">
+            <button class="chart-tf-btn" data-tf="15m" onclick="setChartTimeframe('15m')">15m</button>
+            <button class="chart-tf-btn" data-tf="30m" onclick="setChartTimeframe('30m')">30m</button>
+            <button class="chart-tf-btn" data-tf="1h" onclick="setChartTimeframe('1h')">1h</button>
+            <button class="chart-tf-btn active" data-tf="all" onclick="setChartTimeframe('all')">All</button>
+          </div>
+          <span class="chart-timespan" id="chartTimespan"></span>
+        </div>
       </div>
-      <div class="chart-container">
+      <div class="chart-container" style="position:relative">
         <canvas id="queueChart" width="600" height="120"></canvas>
+        <div class="chart-tooltip" id="chartTooltip"></div>
       </div>
     </div>
 

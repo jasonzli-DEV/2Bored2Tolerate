@@ -39,6 +39,37 @@ const hungerValue = $('#hungerValue');
 const chartTimespan = $('#chartTimespan');
 
 // ============================================
+// Chart State
+// ============================================
+let chartTimeframe = 'all';   // '15m' | '30m' | '1h' | 'all'
+let _chartPoints = [];         // Stores {canvasX, dataX, point} for hover tooltip
+
+/** Filter queue history to the selected timeframe */
+function filterHistory(history, tf) {
+  if (!tf || tf === 'all') return history;
+  const windowMs = { '15m': 15 * 60000, '30m': 30 * 60000, '1h': 60 * 60000 }[tf];
+  if (!windowMs) return history;
+  const cutoff = Date.now() - windowMs;
+  const filtered = history.filter((p) => p.time >= cutoff);
+  // If the timeframe is longer than the actual data, show everything gracefully
+  return filtered.length >= 2 ? filtered : history;
+}
+
+/** Switch the chart timeframe and redraw */
+function setChartTimeframe(tf) {
+  chartTimeframe = tf;
+  document.querySelectorAll('.chart-tf-btn').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.tf === tf);
+  });
+  if (currentState.queueHistory?.length > 1) {
+    const filtered = filterHistory(currentState.queueHistory, tf);
+    drawChart(filtered);
+    updateChartTimespan(filtered);
+  }
+}
+window.setChartTimeframe = setChartTimeframe;
+
+// ============================================
 // Login / Auth
 // ============================================
 
@@ -194,8 +225,9 @@ function updateUI(state) {
   // Queue chart
   if (state.queueHistory && state.queueHistory.length > 1) {
     chartCard.style.display = '';
-    drawChart(state.queueHistory);
-    updateChartTimespan(state.queueHistory);
+    const filtered = filterHistory(state.queueHistory, chartTimeframe);
+    drawChart(filtered);
+    updateChartTimespan(filtered);
   }
 
   // Version
@@ -384,6 +416,13 @@ function drawChart(history) {
     ctx.fillText(val.toString(), padding.left - 8, y + 5);
   }
 
+  // Compute data points and store for hover lookup
+  _chartPoints = history.map((point, i) => {
+    const x = padding.left + (i / (history.length - 1)) * plotW;
+    const y = padding.top + (1 - (point.position - minPos) / (maxPos - minPos)) * plotH;
+    return { canvasX: x, canvasY: y, point };
+  });
+
   // Draw line
   ctx.beginPath();
   ctx.strokeStyle = '#00ff88';
@@ -391,11 +430,9 @@ function drawChart(history) {
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
 
-  history.forEach((point, i) => {
-    const x = padding.left + (i / (history.length - 1)) * plotW;
-    const y = padding.top + (1 - (point.position - minPos) / (maxPos - minPos)) * plotH;
-    if (i === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
+  _chartPoints.forEach(({ canvasX, canvasY }, i) => {
+    if (i === 0) ctx.moveTo(canvasX, canvasY);
+    else ctx.lineTo(canvasX, canvasY);
   });
   ctx.stroke();
 
@@ -411,10 +448,8 @@ function drawChart(history) {
   ctx.fill();
 
   // Current position dot
-  if (history.length > 0) {
-    const last = history[history.length - 1];
-    const x = w - padding.right;
-    const y = padding.top + (1 - (last.position - minPos) / (maxPos - minPos)) * plotH;
+  if (_chartPoints.length > 0) {
+    const { canvasX: x, canvasY: y } = _chartPoints[_chartPoints.length - 1];
 
     ctx.beginPath();
     ctx.arc(x, y, 6, 0, Math.PI * 2);
@@ -428,6 +463,59 @@ function drawChart(history) {
     ctx.stroke();
   }
 }
+
+// ============================================
+// Chart Hover Tooltip
+// ============================================
+function setupChartHover() {
+  const canvas = document.getElementById('queueChart');
+  const tooltip = document.getElementById('chartTooltip');
+  if (!canvas || !tooltip) return;
+
+  canvas.addEventListener('mousemove', (e) => {
+    if (_chartPoints.length < 2) return;
+
+    const rect = canvas.getBoundingClientRect();
+    // Mouse position in CSS pixels → scale to canvas pixels (retina 2×)
+    const scaleX = canvas.width / rect.width;
+    const mouseCanvasX = (e.clientX - rect.left) * scaleX;
+
+    // Find nearest data point by X distance
+    let nearest = _chartPoints[0];
+    let minDist = Infinity;
+    for (const cp of _chartPoints) {
+      const dist = Math.abs(cp.canvasX - mouseCanvasX);
+      if (dist < minDist) {
+        minDist = dist;
+        nearest = cp;
+      }
+    }
+
+    if (!nearest) return;
+
+    // Position tooltip: convert canvas X back to CSS pixels, relative to container
+    const cssX = nearest.canvasX / scaleX;
+    const timeStr = new Date(nearest.point.time).toLocaleTimeString(
+      [], { hour: '2-digit', minute: '2-digit', second: '2-digit' }
+    );
+
+    tooltip.innerHTML =
+      `<span class="chart-tooltip-pos">#${nearest.point.position}</span>` +
+      `<span class="chart-tooltip-time">${timeStr}</span>`;
+
+    // Keep tooltip inside the container (left 8px, right 8px margin)
+    const containerWidth = rect.width;
+    let left = cssX;
+    left = Math.max(40, Math.min(containerWidth - 40, left));
+    tooltip.style.left = `${left}px`;
+    tooltip.classList.add('visible');
+  });
+
+  canvas.addEventListener('mouseleave', () => {
+    tooltip.classList.remove('visible');
+  });
+}
+
 
 // ============================================
 // Utilities
@@ -453,9 +541,13 @@ function showToast(message, type = 'info') {
 // If the server requires a password, it will reject and we'll show the login screen.
 connect();
 
+// Set up chart hover tooltip
+setupChartHover();
+
 // Resize chart on window resize
 window.addEventListener('resize', () => {
   if (currentState.queueHistory?.length > 1) {
-    drawChart(currentState.queueHistory);
+    const filtered = filterHistory(currentState.queueHistory, chartTimeframe);
+    drawChart(filtered);
   }
 });

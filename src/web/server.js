@@ -154,7 +154,7 @@ class WebServer {
     this.proxy.on('stateChange', (state) => {
       this.io.emit('state', {
         ...state,
-        queueHistory: this.proxy.queueHistory.slice(-60),
+        queueHistory: this.proxy.queueHistory.slice(), // full history for client-side timeframe filtering
       });
     });
 
