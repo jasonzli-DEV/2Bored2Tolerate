@@ -528,6 +528,23 @@ class ProxyManager extends EventEmitter {
     this.server.on('login', (newProxyClient) => {
       this._log(`Player connected: ${newProxyClient.username}`);
 
+      // Block connection while 2b2t queue is not finished.
+      // Attempting to link mid-queue causes the 2b2t server's cached
+      // configuration-phase packets (e.g. cookie_request) to be replayed to
+      // the client in play-state, triggering a DecoderException crash loop.
+      if (!this.finishedQueue) {
+        const pos = this.state.queuePlace !== 'None' ? `#${this.state.queuePlace}` : '?';
+        const eta = this.state.eta !== 'None' ? this.state.eta : '?';
+        newProxyClient.end(
+          `§cStill waiting in the 2b2t queue!\n\n` +
+          `§7Position: §e${pos}\n` +
+          `§7ETA: §e${eta}\n\n` +
+          `§7Connect again after the queue finishes.`
+        );
+        this._log(`${newProxyClient.username} tried to connect while in queue (pos ${pos}) — kicked with status`);
+        return;
+      }
+
       // Whitelist check
       if (config.proxy.whitelist && this.client && this.client.uuid !== newProxyClient.uuid) {
         newProxyClient.end('Not whitelisted! Use the same account as the proxy.');

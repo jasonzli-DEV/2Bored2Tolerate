@@ -62,7 +62,7 @@ function setChartTimeframe(tf) {
   if (currentState.queueHistory) {
     const filtered = filterHistory(currentState.queueHistory, tf);
     drawChart(filtered);
-    updateChartTimespan(filtered);
+    updateChartTimespan(filtered, tf);
   }
 }
 window.setChartTimeframe = setChartTimeframe;
@@ -225,7 +225,7 @@ function updateUI(state) {
     chartCard.style.display = '';
     const filtered = filterHistory(state.queueHistory, chartTimeframe);
     drawChart(filtered);
-    updateChartTimespan(filtered);
+    updateChartTimespan(filtered, chartTimeframe);
   }
 
   // Version
@@ -337,9 +337,15 @@ window.clearLogs = clearLogs;
 // ============================================
 // Chart Time Period
 // ============================================
-function updateChartTimespan(history) {
-  if (!chartTimespan || history.length < 2) {
-    if (chartTimespan) chartTimespan.textContent = '';
+function updateChartTimespan(history, tf) {
+  if (!chartTimespan) return;
+
+  // Prefix label for named timeframes so it's clear what window is selected
+  const windowLabel = { '15m': 'Last 15m', '30m': 'Last 30m', '1h': 'Last 1h' }[tf] || '';
+
+  if (history.length < 2) {
+    // Show the window label even when there's no data, so the button click has feedback
+    chartTimespan.textContent = windowLabel ? `${windowLabel} · no data` : '';
     return;
   }
 
@@ -361,9 +367,10 @@ function updateChartTimespan(history) {
     durationStr = `${totalSec}s`;
   }
 
-  // Format time range
+  // Format time range — prefix with selected window when applicable
   const fmt = (t) => new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  chartTimespan.textContent = `${fmt(firstTime)} - ${fmt(lastTime)} (${durationStr})`;
+  const range = `${fmt(firstTime)} – ${fmt(lastTime)} (${durationStr})`;
+  chartTimespan.textContent = windowLabel ? `${windowLabel} · ${range}` : range;
 }
 
 // ============================================
