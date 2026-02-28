@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
-    "test": "node test/test.js"
+    "test": "node test/test.js",
+    "learn": "node src/queuelearner.js"
   },
   "engines": {
     "node": ">=22.0.0"
