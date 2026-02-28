@@ -1,206 +1,195 @@
-<!-- Badges -->
-[![contributors]][contributors-url]
-[![stars]][stars-url]
-[![issues]][issues-url]
-[![forks]][forks-url]
-[![donate]][donate-url]
-[![discord]][discord-url]
-
-<!-- PROJECT LOGO -->
-</br>
 <div align="center">
 
-<a href="#readme.md"><img align="center" src="images/logo.png" alt="Logo" width="80" height="80"><a>
+# 2Bored2Tolerate
 
-### 2bored2wait
+### A modern proxy to wait out 2b2t.org's queue
 
-A proxy to wait out 2b2t.org's way too long queue. Includes a small webserver a REST-like API for external control
+*Fork of the archived [2bored2wait](https://github.com/themoonisacheese/2bored2wait) project, fully modernized.*
 
-# 2Bored2Wait is not updated to 1.19. There are no plans to update. This repository is kept for posterity, but there will not be any future update here.
-# Other people are free to fork this repo and distribute updated copies according to the [licence](LICENSE) (GPL-3.0).
+[![License: GPL-3.0](https://img.shields.io/badge/License-GPL%203.0-blue.svg)](LICENSE)
+[![Node.js](https://img.shields.io/badge/Node.js-22%2B-green.svg)](https://nodejs.org)
 
 </div>
 
-<!-- TABLE OF CONTENTS -->
-<details open="open">
-<summary>Table of Contents</summary><p>
+---
 
-1. [About The Project](#about-the-project)
-   - [Built With](#built-with)
-2. [Getting Started](#getting-started)
-   - [Prerequisites](#prerequisites)
-   - [Installation](#installation)
-3. [How to use](#how-to-use)
-4. [Configuration](#configuration)
-5. [Roadmap and known issues](#roadmap-and-known-issues)
-   - [How to make a bug report](#how-to-make-a-bug-report)
-6. [Addons](#addons)
-7. [Contributing](#contributing)
-8. [License](#license)
-9. [Testing](#testing)
+## What is this?
 
-</p></details>
+2Bored2Tolerate is a queue proxy for 2b2t.org. It connects to the server, waits through the queue for you, and lets you join through a local Minecraft server when your position is near the front. Features include:
 
-<!-- ABOUT THE PROJECT -->
+- **Real-time web dashboard** with queue position, ETA, and live chart
+- **Anti-AFK system** — automatically prevents kicks after queue finishes so you don't have to time your login
+- **Discord bot** integration for remote monitoring
+- **Desktop notifications** when queue is almost done
+- **REST API** for external control
+- **Docker support** with simple `.env` configuration
+- **Auto-reconnect** on disconnection
+- **Queue ETA estimation** using exponential decay modeling
 
-## About The Project
+## Quick Start
 
-A proxy to wait out 2b2t.org's way too long queue.  
-Please Note that because of security reasons this tool doesn't auto-update without a plug-in (check out the addons section)! Also 2b2w does not show ETA from 2b2t.  
-The ETA is calculated based on position in the queue. This results in better ETA most of the time.
+### Prerequisites
 
-### Built With
+- [Node.js](https://nodejs.org/) 22 or higher
+- A Minecraft account (Microsoft auth)
 
-- node.js
-- npm
-- HTML
-
-<!-- GETTING STARTED -->
-
-# Getting Started
-
-To get a local copy up and running follow these simple steps.
-
-## Prerequisites
-
-Please obtain all required items
-
-- A discord bot (optional) ([detailed instructions](https://discordpy.readthedocs.io/en/stable/discord.html))
-
-## Installation
-   
-### Video installation
-
-Click the picture or link bellow to watch!   
-~~[![Click Me To Watch!](https://img.youtube.com/vi/3kCKnwuiHak/0.jpg)](https://youtu.be/3kCKnwuiHak)~~ Video removed by owner.
-  
-   
-~~https://youtu.be/3kCKnwuiHak~~ Video removed by owner.
-
-### Quick Install (64-bit Systems)
-
-1. Read the code to ensure I'm not stealing your credentials. I'm not, but you shouldn't take my word for it. If you don't know how to read it, downloading stuff off the internet and giving it your password is probably a bad idea anyway.
-2. Download the executable [here](https://github.com/themoonisacheese/2bored2wait/releases/latest)
-3. (Optional) Take a look at the [Configs](#configuration)! 
-
-### Manual Install (32-bit systems, and fallback for quick install):
-
-1. Download and install [node.js](https://nodejs.org/) version 16 or above and [git](https://git-scm.com). You need git even if you download the repository as zip because it is to install the dependencies via npm.
-2. Open a terminal then clone this repo then cd into folder:
+### Installation
 
 ```sh
- git clone https://github.com/themoonisacheese/2bored2wait
- cd 2bored2wait
+git clone https://github.com/jasonzli-DEV/2Bored2Tolerate.git
+cd 2Bored2Tolerate
+cp .env.example .env
+# Edit .env with your settings
+npm install
+npm start
 ```
-
-3. Run ```yarn``` to install the required libraries
-4. Start the program with ````yarn start````.
 
 ### Docker
 
-1. Read the code to ensure I'm not stealing your credentials. I'm not, but you shouldn't take my word for it. If you don't know how to read it, downloading stuff off the internet and giving it your password is probably a bad idea anyway.
-2. `docker run -d -p 8080:8080 -p 25565:25565 -e NODE_CONFIG='{"username": "account email", "accountType": "mojang or microsoft", "mcPassword": "your password", "BotToken": "your discord bot token"}' 2bored2wait/2bored2wait:latest`. The docker image is automatically up to date after each push to this repo. Docker images are available for `amd64` and `arm64` among other platforms.
-3. Open a browser and navigate to http://localhost:8080
-4. Press the "Start queuing" button. The queue position indicator auto-updates, but sometimes it takes a while to start counting (like 1 min).
-5. Once the queue reaches a low number, connect to the Minecraft server at address `localhost`.
-6. After you log off, click the "stop queuing" button. This is really important, as you will not actually disconnect from 2b2t until you do that.
+```sh
+cp .env.example .env
+# Edit .env with your settings
+docker compose up -d
+```
 
-If you want to change the configuration or you don't want your credentials in the bash history you will have to mount config/local.json manually.
+Or with environment variables directly:
 
-# Configuration
+```sh
+docker run -d \
+  -p 8080:8080 -p 25565:25565 \
+  -e MC_EMAIL=your@email.com \
+  -e MC_AUTH_TYPE=microsoft \
+  ghcr.io/jasonzli-dev/2bored2tolerate:latest
+```
 
-- You can change all credentials and whether you want update messages by simply editing the values in local.json or deleting that file.
-- For the quick install, configs are located: 
-   - gnu+linux/macos: $HOME/.config/2bored2wait/
-   - windows: C:\Users\USERNAME\AppData\Roaming\2bored2wait\Config\ 
+## Configuration
 
+All configuration is done through environment variables or a `.env` file. Copy `.env.example` to `.env` and edit:
 
-# How to use
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MC_EMAIL` | | Your Minecraft account email |
+| `MC_AUTH_TYPE` | `microsoft` | Auth type: `microsoft` |
+| `MC_VERSION` | `1.21.4` | Minecraft protocol version (2b2t uses 1.21.4) |
+| `AUTH_PROFILES_FOLDER` | `./data/auth` | Where to store auth tokens |
+| `SERVER_HOST` | `2b2t.org` | Target server hostname |
+| `SERVER_PORT` | `25565` | Target server port |
+| `PROXY_PORT` | `25565` | Local proxy server port |
+| `PROXY_ONLINE_MODE` | `true` | Require authenticated Minecraft client |
+| `WEB_PORT` | `8080` | Web dashboard port |
+| `WEB_PASSWORD` | | Dashboard password (optional) |
+| `DISCORD_ENABLED` | `false` | Enable Discord bot |
+| `DISCORD_TOKEN` | | Discord bot token |
+| `ANTIAFK_ENABLED` | `true` | Enable anti-AFK after queue |
+| `JOIN_ON_START` | `false` | Auto-join queue on startup |
+| `RECONNECT_ON_ERROR` | `true` | Auto-reconnect on disconnect |
+| `RESTART_QUEUE` | `false` | Auto-restart queue if no player |
 
-1. Read the code to ensure I'm not stealing your credentials. I'm not, but you shouldn't take my word for it. If you don't know how to read it, downloading stuff off the internet and giving it your password is probably a bad idea anyway.
-2. Run `npm start`
-3. It will now ask for your Minecraft email and password (or permission to use saved launcher data instead). If you want update messages then you need to type Y otherwise N. If you are using the discord bot you need to add your token. Then answer Y or N if you want to save your Minecraft credentials. If you answer N you will need to re-enter your Minecraft login information into the console each time you start the program.
-4. Refer to Commands on how to use 2b2w from the console. Otherwise keep on reading for the web interface.
-5. Now open a browser and navigate to http://localhost: your web port here (default 8080).
-6. Press the "Start queuing" button. The queue position indicator auto-updates, but sometimes it takes a while to start counting (like 1 min).
-7. Once the queue reaches a low number, connect to the Minecraft server at address `localhost`.
-8. After you log off, click the "stop queuing" button. This is really important, as you will not actually disconnect from 2b2t until you do that.
+See `.env.example` for all options.
 
-## Commands
+## How to Use
 
-All commands can be used through discord or simply typed in the console window.
+1. **Start the proxy**: `npm start`
+2. **Authenticate**: On first run, you'll be prompted with a Microsoft device code — visit the URL shown and enter the code to sign in. Auth tokens are cached in `data/auth/` for future runs.
+3. **Open the dashboard**: Navigate to `http://localhost:8080` (if `WEB_PASSWORD` is set, you'll see a login screen)
+4. **Click "Start Queue"** to begin queueing
+5. **Wait** — the dashboard shows real-time position and ETA
+6. **Connect in Minecraft** to `localhost:25565` when the queue is near the front
+7. **Anti-AFK**: If enabled, the bot will automatically prevent kicks until you connect (stays within 2 blocks of its position)
+8. **Click "Stop Queue"** after you're done playing
 
-- Please note that the time zone for the calculations is based off your computer's time!
+## Anti-AFK
 
-- Here are some basic commands:
-   - `start` will start the queue. It takes between 15-30 seconds for the bot to update with the queue position.
-      - `start 14:00` will start at 2pm.
-   - `play 8:00` will try to calculate the right time to join so you can play at 8:00
-   - `update` will send an update to the current channel with your position and ETA.
-   - `stop` will stop the queue.
-- Type `help` for a full ist of commands
+The anti-AFK system activates automatically when:
+- The queue finishes and you haven't connected yet
+- You disconnect from the local server while the bot is still on the server
 
-<!-- ROADMAP -->
+It performs randomized actions (walking, looking, jumping, etc.) to prevent the server from kicking you for being idle. The bot **never moves more than 2 blocks** from its original position and will walk back if it drifts too far.
 
-## Roadmap and known issues
+**Anti-AFK does NOT activate** when a real player is connected and playing. It only runs when the bot is unattended.
 
-See the [open issues](https://github.com/themoonisacheese/2bored2wait/issues) for a list of proposed features (and known issues).
+Configure via `.env`:
+```
+ANTIAFK_ENABLED=true
+ANTIAFK_WALK=true
+ANTIAFK_LOOK=true
+ANTIAFK_JUMP=true
+ANTIAFK_SWING=true
+ANTIAFK_SNEAK=true
+ANTIAFK_INTERVAL=15000
+```
 
-- Starting the queue will revoke your Minecraft token. this means that you will not be able to join normal Minecraft servers until you restart the game
-- If you connect after the queue is finished or reconnect the proxy will send cached data. Otherwise you would fly in an empty world. However not all data will be resend. You can move out of render distance (I find going through a nether portal works best) and return to fix this issue. Sometimes the client renders a cached chunk with a blank texture.
+## CLI Commands
 
-### How to make a bug report
+Type these in the terminal while running:
 
-Try updating 2bored2wait, run `npm update` (if you are using the source code), and update your system.
+| Command | Description |
+|---------|-------------|
+| `start` | Start queueing |
+| `stop` | Stop queueing |
+| `update` | Show current status |
+| `stats` | Show health/hunger |
+| `antiafk` | Toggle anti-AFK |
+| `restart` | Toggle auto-restart |
+| `help` | Show commands |
+| `exit` | Exit application |
 
-• Give info in bug reports such as....
+## API
 
-- Output of `npm list` (if you are using the source code).
-- Version of program.
-- Other error messages. 
+### REST Endpoints
 
-Make a bug report [here](https://github.com/themoonisacheese/2bored2wait/issues). Feel free to ask questions or add feature requests as well.
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/health` | Health check |
+| GET | `/api/state` | Full proxy state |
+| POST | `/api/start` | Start queue |
+| POST | `/api/stop` | Stop queue |
+| POST | `/api/toggle-restart` | Toggle auto-restart |
+| POST | `/api/toggle-antiafk` | Toggle anti-AFK |
+| GET | `/api/stats` | Player health/hunger |
 
-## Addons
-~~[Auto-Update](https://github.com/KozmikCode/2b2t-auto-update) Allows you to have auto updates!~~ REMOVED DUE TO 404 
-   
-<!-- CONTRIBUTING -->
+All protected endpoints require `X-Password` header if `WEB_PASSWORD` is set.
 
-## Contributing
-   
+### WebSocket (Socket.IO)
 
-Contributions are what make the open source community such an amazing place to be learn, inspire, and create. Any contributions you make are **greatly appreciated**.
+Connect to the same port. Events:
+- `state` — full state updates
+- `log` — activity log entries
+- `queueUpdate` — position changes
+- `queueFinished` — queue complete
+- `stopped` — queue stopped
 
-1. Fork the Project
-2. Create your Feature Branch (`git checkout -b themoonisacheese/2bored2wait`)
-3. Commit your Changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the Branch (`git push origin themoonisacheese/2bored2wait`)
-5. Open a Pull Request
+## Testing
 
-<!-- LICENSE -->
+```sh
+npm test
+```
+
+## Project Structure
+
+```
+src/
+  index.js        Entry point
+  config.js       Environment configuration
+  logger.js       Winston logging
+  proxy.js        MC proxy & queue management  
+  antiafk.js      Anti-AFK behaviors
+  discord.js      Discord bot
+  commands.js     CLI commands
+  web/
+    server.js     Express + Socket.IO
+    public/       Dashboard assets
+data/
+  queue.json      ETA estimation data
+test/
+  test.js         Test suite
+```
 
 ## License
 
-Distributed under the GPL-3.0 License. See [this](LICENSE) for more information.
+GPL-3.0 — see [LICENSE](LICENSE)
 
-<!-- ACKNOWLEDGEMENTS -->
+## Credits
 
-# Testing
-
-- Run `npm test` to run test.js
-
-<!-- MARKDOWN LINKS & IMAGES -->
-<!-- https://www.markdownguide.org/basic-syntax/#reference-style-links -->
-
-[contributors]: https://img.shields.io/github/contributors/themoonisacheese/2bored2wait.svg?style=for-the-badge&color=3e961e
-[contributors-url]: https://github.com/themoonisacheese/2bored2wait/graphs/contributors
-[stars]: https://img.shields.io/github/stars/themoonisacheese/2bored2wait.svg?style=for-the-badge&color=yellow
-[stars-url]: https://github.com/themoonisacheese/2bored2wait/stargazers
-[issues]: https://img.shields.io/github/issues-raw/themoonisacheese/2bored2wait.svg?label=issues&style=for-the-badge&color=orange
-[issues-url]: https://github.com/themoonisacheese/2bored2wait/issues
-[forks]: https://img.shields.io/github/forks/themoonisacheese/2bored2wait.svg?style=for-the-badge
-[forks-url]: https://github.com/themoonisacheese/2bored2wait/network/members
-[donate]: https://img.shields.io/badge/Donate-PayPal-green.svg?style=for-the-badge
-[donate-url]: https://paypal.me/themoonisacheese
-[discord]: https://img.shields.io/badge/dynamic/json?label=Discord&color=7289da&query=%24.presence_count&url=https%3A%2F%2Fdiscordapp.com%2Fapi%2Fguilds%2F879482948099919903%2Fwidget.json&style=for-the-badge
-[discord-url]: https://discord.gg/9ZrXZp7nVj
+Originally created by [themoonisacheese](https://github.com/themoonisacheese/2bored2wait) and contributors.
+Modernized fork by [jasonzli-DEV](https://github.com/jasonzli-DEV).

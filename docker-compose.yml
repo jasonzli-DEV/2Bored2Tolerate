@@ -1,14 +1,11 @@
----
-version: "3"
 services:
-   2bored2wait:
-      image: 2bored2wait/2bored2wait:latest
-      container_name: 2bored2wait
-      stdin_open: true
-      tty: true
-      ports:
-         - "80:8080"
-         - "25565:25565"
-      restart: unless-stopped
-      environment:
-              NODE_CONFIG: '{"username": "acount email", "accountType": "mojang or microsoft", "mcPassword": "your password", "BotToken": "your discord bot token"}'
+  2bored2tolerate:
+    build: .
+    container_name: 2bored2tolerate
+    ports:
+      - "8080:8080"
+      - "25565:25565"
+    env_file: .env
+    restart: unless-stopped
+    volumes:
+      - ./data:/app/data

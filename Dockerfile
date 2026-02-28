@@ -1,20 +1,21 @@
-FROM node:alpine
+FROM node:22-alpine
 
-LABEL maintainer="mrgeorgen"
-LABEL name="2bored2wait"
+LABEL maintainer="jasonzli-DEV"
+LABEL name="2bored2tolerate"
+LABEL description="Modern queue proxy for 2b2t.org"
 
-# copy application
+WORKDIR /app
 
-WORKDIR "/srv/app"
+# Install dependencies first for better layer caching
+COPY package.json ./
+RUN npm install --omit=dev
 
-COPY . "/srv/app"
+# Copy application source
+COPY . .
 
-# install requirements
-RUN npm install
-
-# exposing 8080 (webui), 25566 (mc proxy)
+# Expose ports: web dashboard + minecraft proxy
 EXPOSE 8080/tcp
 EXPOSE 25565/tcp
 
-# run container
-CMD npm start
+# Run with node directly (no npm overhead)
+CMD ["node", "src/index.js"]

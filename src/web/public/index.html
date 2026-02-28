@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>2Bored2Tolerate</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect x='1' y='1' width='14' height='14' rx='3' fill='%2300ff88'/></svg>">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <!-- Animated background -->
+  <div class="bg-animation">
+    <div class="bg-grid"></div>
+  </div>
+
+  <!-- Login Overlay (shown when password is required) -->
+  <div class="login-overlay" id="loginOverlay">
+    <div class="login-card">
+      <div class="login-logo">
+        <svg viewBox="0 0 40 40" width="48" height="48">
+          <rect x="2" y="2" width="36" height="36" rx="8" fill="#00ff88" opacity="0.2"/>
+          <rect x="6" y="6" width="28" height="28" rx="4" fill="none" stroke="#00ff88" stroke-width="2"/>
+          <rect x="12" y="12" width="7" height="7" fill="#00ff88"/>
+          <rect x="21" y="12" width="7" height="7" fill="#00ff88" opacity="0.6"/>
+          <rect x="12" y="21" width="7" height="7" fill="#00ff88" opacity="0.6"/>
+          <rect x="21" y="21" width="7" height="7" fill="#00ff88"/>
+        </svg>
+      </div>
+      <h2 class="login-title">2Bored2Tolerate</h2>
+      <p class="login-subtitle">Enter dashboard password to continue</p>
+      <form id="loginForm" onsubmit="return handleLogin(event)">
+        <input type="password" id="loginPassword" class="login-input" placeholder="Password" autocomplete="off" autofocus>
+        <div class="login-error" id="loginError"></div>
+        <button type="submit" class="login-btn">Sign In</button>
+      </form>
+    </div>
+  </div>
+
+  <div class="container" id="mainContainer" style="display:none">
+    <!-- Header -->
+    <header class="header">
+      <div class="header-left">
+        <div class="logo">
+          <svg viewBox="0 0 40 40" width="36" height="36">
+            <rect x="2" y="2" width="36" height="36" rx="8" fill="#00ff88" opacity="0.2"/>
+            <rect x="6" y="6" width="28" height="28" rx="4" fill="none" stroke="#00ff88" stroke-width="2"/>
+            <rect x="12" y="12" width="7" height="7" fill="#00ff88"/>
+            <rect x="21" y="12" width="7" height="7" fill="#00ff88" opacity="0.6"/>
+            <rect x="12" y="21" width="7" height="7" fill="#00ff88" opacity="0.6"/>
+            <rect x="21" y="21" width="7" height="7" fill="#00ff88"/>
+          </svg>
+        </div>
+        <div>
+          <h1 class="title">2Bored2Tolerate</h1>
+          <p class="subtitle">Queue Proxy for 2b2t</p>
+        </div>
+      </div>
+      <div class="header-right">
+        <span class="version" id="appVersion">v4.0.0</span>
+        <span class="connection-dot" id="connectionDot" title="WebSocket Status"></span>
+      </div>
+    </header>
+
+    <!-- Status Cards -->
+    <div class="status-grid">
+      <div class="card status-card">
+        <div class="card-label">STATUS</div>
+        <div class="status-indicator" id="statusIndicator">
+          <span class="status-dot" id="statusDot"></span>
+          <span class="status-text" id="statusText">Idle</span>
+        </div>
+      </div>
+
+      <div class="card position-card">
+        <div class="card-label">POSITION</div>
+        <div class="position-value" id="queuePosition">None</div>
+      </div>
+
+      <div class="card eta-card">
+        <div class="card-label">ETA</div>
+        <div class="eta-value" id="etaValue">None</div>
+        <div class="eta-finish" id="etaFinish"></div>
+      </div>
+    </div>
+
+    <!-- Queue History Chart -->
+    <div class="card chart-card" id="chartCard" style="display:none">
+      <div class="card-label">
+        QUEUE PROGRESS
+        <span class="chart-timespan" id="chartTimespan"></span>
+      </div>
+      <div class="chart-container">
+        <canvas id="queueChart" width="600" height="120"></canvas>
+      </div>
+    </div>
+
+    <!-- Controls -->
+    <div class="card controls-card">
+      <div class="card-label">CONTROLS</div>
+      <div class="controls-row">
+        <button class="btn btn-start" id="startBtn" onclick="sendCommand('start')">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
+            <path d="M8 5v14l11-7z"/>
+          </svg>
+          Start Queue
+        </button>
+        <button class="btn btn-stop" id="stopBtn" onclick="sendCommand('stop')">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
+            <rect x="6" y="6" width="12" height="12" rx="1"/>
+          </svg>
+          Stop Queue
+        </button>
+      </div>
+
+      <div class="toggles-row">
+        <label class="toggle-label">
+          <input type="checkbox" id="antiAfkToggle" onchange="sendCommand('toggleAntiAfk')">
+          <span class="toggle-switch"></span>
+          <span class="toggle-text">Anti-AFK</span>
+          <span class="toggle-desc">Prevents server kicks after queue</span>
+        </label>
+
+        <label class="toggle-label">
+          <input type="checkbox" id="restartToggle" onchange="sendCommand('toggleRestart')">
+          <span class="toggle-switch"></span>
+          <span class="toggle-text">Auto-Restart</span>
+          <span class="toggle-desc">Rejoin queue if disconnected</span>
+        </label>
+      </div>
+    </div>
+
+    <!-- Player Stats (shown when connected) -->
+    <div class="card stats-card" id="statsCard" style="display:none">
+      <div class="card-label">PLAYER STATS</div>
+      <div class="stats-row">
+        <div class="stat">
+          <span class="stat-icon">❤️</span>
+          <span class="stat-label">Health</span>
+          <div class="stat-bar">
+            <div class="stat-fill health-fill" id="healthBar" style="width:0%"></div>
+          </div>
+          <span class="stat-value" id="healthValue">--</span>
+        </div>
+        <div class="stat">
+          <span class="stat-icon">🍖</span>
+          <span class="stat-label">Hunger</span>
+          <div class="stat-bar">
+            <div class="stat-fill hunger-fill" id="hungerBar" style="width:0%"></div>
+          </div>
+          <span class="stat-value" id="hungerValue">--</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Connection Guide -->
+    <div class="card connection-card" id="connectionCard">
+      <div class="card-label">HOW TO CONNECT</div>
+      <div class="connection-info">
+        <p class="connection-desc">Once the queue finishes, connect to the proxy server from your Minecraft client:</p>
+        <div class="connection-steps">
+          <div class="connection-step">
+            <span class="step-number">1</span>
+            <span>Start the queue from this dashboard and wait for it to finish</span>
+          </div>
+          <div class="connection-step">
+            <span class="step-number">2</span>
+            <span>In Minecraft, go to <strong>Multiplayer</strong> &rarr; <strong>Add Server</strong></span>
+          </div>
+          <div class="connection-step">
+            <span class="step-number">3</span>
+            <span>Set the server address to: <code class="connection-address" id="proxyAddress">localhost:25565</code></span>
+          </div>
+          <div class="connection-step">
+            <span class="step-number">4</span>
+            <span>Join the server &mdash; you'll be forwarded to 2b2t through the proxy</span>
+          </div>
+        </div>
+        <p class="connection-note">You must use the <strong>same Microsoft account</strong> in Minecraft that the proxy authenticated with. The proxy must be running when you connect.</p>
+      </div>
+    </div>
+
+    <!-- Activity Log -->
+    <div class="card log-card">
+      <div class="card-label">
+        ACTIVITY LOG
+        <button class="btn-icon" onclick="clearLogs()" title="Clear logs">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
+            <path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/>
+          </svg>
+        </button>
+      </div>
+      <div class="log-container" id="logContainer">
+        <div class="log-empty">No activity yet. Start the queue to begin.</div>
+      </div>
+    </div>
+
+    <!-- Footer -->
+    <footer class="footer">
+      <span id="footerVersion">2Bored2Tolerate v4.0.0</span>
+      <span class="footer-sep">•</span>
+      <a href="https://github.com/jasonzli-DEV/2Bored2Tolerate" target="_blank" rel="noopener">GitHub</a>
+      <span class="footer-sep">•</span>
+      <span>Fork of 2bored2wait</span>
+    </footer>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
