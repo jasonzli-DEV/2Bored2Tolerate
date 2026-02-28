@@ -8,7 +8,7 @@ const path = require('path');
 const logger = require('./logger');
 
 const DATA_PATH = path.join(__dirname, '..', 'data', 'eta-learn.json');
-const MAX_SESSIONS = 200; // Keep last 200 completed sessions
+const MAX_SESSIONS = 500; // Keep last 500 completed sessions
 
 /**
  * ETALearner - blends three sources to estimate remaining queue time:
@@ -135,41 +135,65 @@ class ETALearner {
   }
 
   /**
-   * Compute weighted-average positions-per-hour from historical sessions
-   * that match the current time context (day type + hour window).
-   * Returns null if there aren't enough matches.
+   * Compute a weighted positions-per-hour from all historical sessions,
+   * using a Gaussian decay over hour-of-day distance, a day-type bonus
+   * (weekend vs weekday), and linear recency weighting.
+   *
+   * Unlike a hard ±N hour bracket, every session always contributes — sessions
+   * far from the current hour simply carry very low weight, so the estimate
+   * gracefully degrades when matching data is sparse rather than falling off a
+   * cliff to an "all sessions" average.
+   *
+   * @param {Date} now
+   * @returns {{ rate: number, effectiveSessions: number } | null}
    */
   _getHistoricalRate(now = new Date()) {
-    if (this.sessions.length < 3) return null;
+    if (this.sessions.length === 0) return null;
 
     const hour = now.getHours();
     const isWeekend = now.getDay() === 0 || now.getDay() === 6;
 
-    // Look for sessions within ±3 hours on the same day type
-    const similar = this.sessions.filter((s) => {
-      const sWeekend = s.dayOfWeek === 0 || s.dayOfWeek === 6;
-      const hourDiff = Math.min(
-        Math.abs(s.startHour - hour),
-        24 - Math.abs(s.startHour - hour)
-      );
-      return sWeekend === isWeekend && hourDiff <= 3;
-    });
+    // Sort by recency so we can assign a recency rank
+    const sorted = [...this.sessions].sort((a, b) => b.startTimeMs - a.startTimeMs);
+    const n = sorted.length;
 
-    // Fall back to all sessions if we have fewer than 3 matches
-    const pool = similar.length >= 3 ? similar : (this.sessions.length >= 5 ? this.sessions : null);
-    if (!pool) return null;
-
-    // Linear-decay weighting: more recent sessions contribute more
-    const sorted = [...pool].sort((a, b) => b.startTimeMs - a.startTimeMs);
     let weightedSum = 0;
     let totalWeight = 0;
+    let effectiveCount = 0; // Kish effective sample size numerator
+    let effectiveCountDenom = 0;
+
     sorted.forEach((s, i) => {
-      const weight = sorted.length - i; // n, n-1, n-2 …
-      weightedSum += s.positionsPerHour * weight;
-      totalWeight += weight;
+      // ── Hour similarity: Gaussian, σ = 4 hours (wraps around midnight) ──
+      const rawDiff = Math.abs(s.startHour - hour);
+      const hourDiff = Math.min(rawDiff, 24 - rawDiff);
+      const timeWeight = Math.exp(-0.5 * Math.pow(hourDiff / 4, 2)); // σ=4h
+
+      // ── Day-type bonus: same weekend/weekday type = 1.0, different = 0.35 ──
+      const sWeekend = s.dayOfWeek === 0 || s.dayOfWeek === 6;
+      const dayWeight = sWeekend === isWeekend ? 1.0 : 0.35;
+
+      // ── Recency: linear decay, newest = n, oldest = 1 ──
+      const recencyWeight = (n - i) / n;
+
+      const w = timeWeight * dayWeight * recencyWeight;
+      weightedSum += s.positionsPerHour * w;
+      totalWeight += w;
+
+      // Kish effective sample size — measures how many "full-weight" sessions
+      // this pool is equivalent to
+      effectiveCount += w;
+      effectiveCountDenom += w * w;
     });
 
-    return totalWeight > 0 ? weightedSum / totalWeight : null;
+    if (totalWeight === 0) return null;
+
+    const rate = weightedSum / totalWeight;
+    // Kish ESS: (Σw)² / Σw²
+    const effectiveSessions = effectiveCountDenom > 0
+      ? Math.round((effectiveCount * effectiveCount) / effectiveCountDenom)
+      : 0;
+
+    return { rate, effectiveSessions };
   }
 
   // ─── ETA estimation ────────────────────────────────────────────────────────
@@ -184,28 +208,20 @@ class ETALearner {
    * @returns {number}           - Blended ETA in minutes
    */
   estimateMinutes(currentPos, baseMinutes, now = new Date()) {
-    const historicalRate = this._getHistoricalRate(now); // pos/hr
-    const liveRate = this._getLiveRate();                 // pos/hr (null if < 5 samples)
-
-    // Count similar historical sessions for confidence weighting
-    const hour = now.getHours();
-    const isWeekend = now.getDay() === 0 || now.getDay() === 6;
-    const similarCount = this.sessions.filter((s) => {
-      const sWeekend = s.dayOfWeek === 0 || s.dayOfWeek === 6;
-      const hourDiff = Math.min(Math.abs(s.startHour - hour), 24 - Math.abs(s.startHour - hour));
-      return sWeekend === isWeekend && hourDiff <= 3;
-    }).length;
+    const historical = this._getHistoricalRate(now); // { rate, effectiveSessions } | null
+    const liveRate = this._getLiveRate();             // pos/hr (null if < 5 samples)
 
     // --- Build array of (minutes, weight) ---
     const candidates = [];
 
-    // 1. Base model always contributes (30–50%)
+    // 1. Base model always contributes
     candidates.push({ minutes: baseMinutes, weight: 0.5 });
 
-    // 2. Historical rate (increases from 0.25 to 0.5 as we get more data)
-    if (historicalRate && historicalRate > 0) {
-      const histMinutes = (currentPos / historicalRate) * 60;
-      const histWeight = Math.min(0.5, 0.1 + similarCount * 0.04);
+    // 2. Historical rate — confidence grows with effective session count
+    //    0 effective → weight 0; 10+ effective → up to 0.5
+    if (historical && historical.rate > 0) {
+      const histMinutes = (currentPos / historical.rate) * 60;
+      const histWeight = Math.min(0.5, historical.effectiveSessions * 0.04);
       candidates.push({ minutes: histMinutes, weight: histWeight });
     }
 
@@ -228,16 +244,12 @@ class ETALearner {
 
   /** Return a brief summary string for logging */
   summary(now = new Date()) {
-    const similar = this.sessions.filter((s) => {
-      const isWeekend = now.getDay() === 0 || now.getDay() === 6;
-      const sWeekend = s.dayOfWeek === 0 || s.dayOfWeek === 6;
-      const hourDiff = Math.min(Math.abs(s.startHour - now.getHours()), 24 - Math.abs(s.startHour - now.getHours()));
-      return sWeekend === isWeekend && hourDiff <= 3;
-    });
-    const rate = this._getHistoricalRate(now);
-    return `${this.sessions.length} sessions total, ` +
-           `${similar.length} matching time context` +
-           (rate ? `, ~${Math.round(rate)} pos/hr historical` : '');
+    const historical = this._getHistoricalRate(now);
+    const ess = historical?.effectiveSessions ?? 0;
+    const rate = historical?.rate ?? null;
+    return `${this.sessions.length} sessions stored, ` +
+           `~${ess} effective for current time` +
+           (rate ? `, ~${Math.round(rate)} pos/hr historical` : ', no historical rate yet');
   }
 }
 

@@ -9,265 +9,235 @@
 // Usage:
 //   node src/queuelearner.js              # uses .env for MC credentials
 //   node src/queuelearner.js --days 3     # run for 3 days instead of 7
+//   node src/queuelearner.js --relog 50   # relog when position <= 50
 //
 // Requires: MC_EMAIL (and auth tokens in data/auth/) set in .env
 
-const mc = require('minecraft-protocol');
-const fs = require('fs');
-const path = require('path');
-const config = require('./config');
-const logger = require('./logger');
+const mc         = require('minecraft-protocol');
+const config     = require('./config');
+const logger     = require('./logger');
 const ETALearner = require('./eta-learner');
 
-// ─── Configuration ───────────────────────────────────────────────────────────
+// ── CLI flags ────────────────────────────────────────────────────────────────
+function getFlag(name, fallback) {
+  const idx = process.argv.indexOf(name);
+  if (idx === -1) return fallback;
+  const val = Number(process.argv[idx + 1]);
+  return isNaN(val) ? fallback : val;
+}
 
-/** Position threshold: disconnect and re-queue when position drops to this */
-const RELOG_THRESHOLD = 30;
-
-/** Delay (ms) before re-queuing after a disconnect */
-const RECONNECT_DELAY = 60_000; // 1 minute
-
-/** How long to run (ms). Default 7 days, overridden with --days N */
-const runDays = (() => {
-  const idx = process.argv.indexOf('--days');
-  return idx !== -1 && process.argv[idx + 1] ? Number(process.argv[idx + 1]) : 7;
-})();
-const RUN_DURATION = runDays * 24 * 3600 * 1000;
-
-// ─── State ───────────────────────────────────────────────────────────────────
+const MAX_DAYS        = getFlag('--days',  7);
+const RELOG_THRESHOLD = getFlag('--relog', 30);
+const STATUS_INTERVAL = 30_000;   // ms between [STATUS] lines
+const RUN_DURATION_MS = MAX_DAYS * 24 * 60 * 60 * 1000;
 
 const learner = new ETALearner();
-const startedAt = Date.now();
-let client = null;
-let lastPosition = null;
-let sessionActive = false;
-let stopping = false;
-let reconnectTimer = null;
-let sessionCount = 0;
+learner.load();
 
-// ─── Chat text extraction (mirrors ProxyManager._extractChatText) ────────────
+// ── Session state ─────────────────────────────────────────────────────────────
+let client          = null;
+let statusTimer     = null;
+let sessionEntryPos = null;
+let sessionEntryMs  = null;
+let posAtLastStatus = null;
+let currentPos      = null;
+let reconnectTimer  = null;
+const startMs       = Date.now();
 
-function extractChatText(component) {
-  if (component == null) return '';
-  if (typeof component === 'string') {
-    try { return extractChatText(JSON.parse(component)); }
-    catch { return component; }
-  }
-  if (typeof component !== 'object') return String(component);
-
-  if (component.type === 'compound' && component.value)
-    return extractChatText(component.value);
-  if (component.type === 'string' && typeof component.value === 'string')
-    return component.value;
-  if (component.type === 'list' && component.value) {
-    const inner = component.value;
-    if (Array.isArray(inner)) return inner.map(extractChatText).join('');
-    if (inner.value && Array.isArray(inner.value))
-      return inner.value.map(extractChatText).join('');
-    return extractChatText(inner);
-  }
-
-  let result = '';
-  if ('text' in component) result += extractChatText(component.text);
-  if (component.translate && !('text' in component))
-    result += extractChatText(component.translate);
-  if (component.extra) {
-    if (Array.isArray(component.extra))
-      for (const c of component.extra) result += extractChatText(c);
-    else result += extractChatText(component.extra);
-  }
-  if (component.with) {
-    if (Array.isArray(component.with))
-      for (const c of component.with) result += extractChatText(c);
-    else result += extractChatText(component.with);
-  }
-  return result;
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function hm(ms) {
+  if (ms < 0) ms = 0;
+  const totalMin = Math.round(ms / 60_000);
+  const h = Math.floor(totalMin / 60);
+  const m = totalMin % 60;
+  if (h === 0) return m + 'm';
+  return h + 'h ' + m + 'm';
 }
 
-// ─── Lifecycle ───────────────────────────────────────────────────────────────
-
-function timeLeft() {
-  const remaining = RUN_DURATION - (Date.now() - startedAt);
-  const h = Math.floor(remaining / 3_600_000);
-  const m = Math.floor((remaining % 3_600_000) / 60_000);
-  return `${h}h ${m}m`;
+function sessionRate() {
+  if (sessionEntryMs === null || sessionEntryPos === null || currentPos === null) return null;
+  const elapsedHr = (Date.now() - sessionEntryMs) / 3_600_000;
+  if (elapsedHr < 0.005) return null;          // too soon (<18 s)
+  const moved = sessionEntryPos - currentPos;
+  if (moved <= 0) return null;
+  return moved / elapsedHr;                    // pos/hr
 }
 
-function savePartialSession() {
-  // Record whatever we have even if the queue didn't finish
-  // (the learner's recordCompletedSession has safeguards for short sessions)
-  if (sessionActive) {
-    learner.recordCompletedSession();
-    sessionActive = false;
-  }
+function rateStr(rate, pos) {
+  if (rate == null || rate <= 0) return null;
+  const msLeft = (pos / rate) * 3_600_000;
+  return Math.round(rate) + ' pos/hr  (~' + hm(msLeft) + ' to pos 0)';
 }
 
-function disconnect(reason) {
-  if (client) {
-    try { client.end(reason); } catch { /* ignore */ }
-    client = null;
-  }
+function printStatus() {
+  if (currentPos === null) return;
+  const rate     = sessionRate();
+  const hist     = learner._getHistoricalRate(new Date());
+  const histRate = hist ? hist.rate              : null;
+  const histEss  = hist ? hist.effectiveSessions : 0;
+  const moved    = (posAtLastStatus !== null && currentPos !== null)
+    ? (posAtLastStatus - currentPos) : '?';
+  const sessions = learner.sessions.length;
+  const running  = hm(Date.now() - startMs);
+  const eta      = (rate && rate > 0) ? hm((currentPos / rate) * 3_600_000) : '?';
+
+  const obsStr  = rate     ? Math.round(rate)     + ' pos/hr' : 'n/a';
+  const histStr = histRate
+    ? Math.round(histRate) + ' pos/hr (' + Math.round(histEss) + ' eff.)'
+    : 'n/a';
+
+  logger.info('[STATUS] #' + currentPos +
+    '  |  observed: '   + obsStr +
+    '  |  historical: '  + histStr +
+    '  |  moved '       + moved + ' in last 30s' +
+    '  |  stored: '     + sessions + ' sessions' +
+    '  |  '             + running + ' running' +
+    '  |  ~'            + eta + ' left');
+
+  posAtLastStatus = currentPos;
 }
 
-function scheduleReconnect() {
-  if (stopping) return;
-  if (Date.now() - startedAt >= RUN_DURATION) {
-    logger.info('Run duration reached. Shutting down.');
-    shutdown();
-    return;
-  }
-  logger.info(`Reconnecting in ${RECONNECT_DELAY / 1000}s ... (${timeLeft()} remaining)`);
-  reconnectTimer = setTimeout(connectToQueue, RECONNECT_DELAY);
+function startStatusTicker() {
+  if (statusTimer) clearInterval(statusTimer);
+  posAtLastStatus = currentPos;
+  statusTimer = setInterval(printStatus, STATUS_INTERVAL);
 }
 
+function stopStatusTicker() {
+  if (statusTimer) { clearInterval(statusTimer); statusTimer = null; }
+}
+
+// ── Connect ───────────────────────────────────────────────────────────────────
 function connectToQueue() {
-  if (stopping) return;
-  if (Date.now() - startedAt >= RUN_DURATION) {
-    logger.info('Run duration reached. Shutting down.');
-    shutdown();
-    return;
-  }
-
-  lastPosition = null;
-  sessionActive = false;
-  let positionError = false;
-  let finishedQueue = false;
-
-  sessionCount++;
-  logger.info(`─── Session #${sessionCount} starting (${timeLeft()} remaining) ───`);
+  logger.info('Connecting to ' + config.server.host + ':' + config.server.port + ' ...');
 
   const options = {
-    host: config.server.host,
-    port: config.server.port,
-    version: config.mc.version,
-    profilesFolder: config.mc.profilesFolder,
+    host:     config.server.host,
+    port:     config.server.port,
+    username: config.mc.email,
+    version:  config.mc.version,
+    auth:     config.mc.authType,
   };
+  if (config.mc.profilesFolder) options.profilesFolder = config.mc.profilesFolder;
 
-  if (config.mc.email) {
-    options.username = config.mc.email;
-    options.auth = config.mc.authType;
-    options.onMsaCode = (data) => {
-      logger.info(`Microsoft Auth: Go to ${data.verification_uri} — code: ${data.user_code}`);
-      try { require('open')(data.verification_uri).catch(() => {}); } catch { /* ignore */ }
-    };
-  } else {
-    logger.error('MC_EMAIL is required. Set it in .env');
-    process.exit(1);
+  client = mc.createClient(options);
+
+  client.on('login', () => {
+    logger.info('Logged in — waiting for queue position ...');
+  });
+
+  client.on('chat', (packet) => {
+    // 2b2t sends queue position in chat as JSON text; parse it roughly
+    let raw = '';
+    try { raw = JSON.parse(packet.message).text || ''; } catch (_) { raw = packet.message || ''; }
+
+    const posMatch = raw.match(/Position in queue: (\d+)/i) ||
+                     raw.match(/queue position[:\s]+(\d+)/i);
+    if (!posMatch) return;
+
+    const pos = parseInt(posMatch[1], 10);
+    currentPos = pos;
+
+    if (sessionEntryPos === null) {
+      // First position reading this session — record queue entry
+      sessionEntryPos = pos;
+      sessionEntryMs  = Date.now();
+      startStatusTicker();
+
+      const hist    = learner._getHistoricalRate(new Date());
+      const histStr = hist
+        ? '  |  historical ~' + Math.round(hist.rate) + ' pos/hr (' +
+          Math.round(hist.effectiveSessions) + ' eff. sessions)'
+        : '';
+      logger.info('Queue entered at #' + pos + histStr);
+      return;
+    }
+
+    const rate = sessionRate();
+    const rs   = rateStr(rate, pos);
+    logger.info('Position: #' + pos + (rs ? '  |  ' + rs : ''));
+
+    if (pos <= RELOG_THRESHOLD) {
+      const durationMs = Date.now() - sessionEntryMs;
+      const r          = sessionRate();
+      const summary    = r
+        ? '~' + hm(durationMs) + ' session, ~' + Math.round(r) + ' pos/hr'
+        : '~' + hm(durationMs) + ' session';
+      logger.info('Position #' + pos + ' <= ' + RELOG_THRESHOLD +
+        ' — saving session and re-queueing  (' + summary + ')');
+      learner.recordSession(sessionEntryMs, sessionEntryPos, pos);
+      learner.save();
+      stopStatusTicker();
+      sessionEntryPos = null;
+      sessionEntryMs  = null;
+      client.end();
+    }
+  });
+
+  client.on('error', (err) => {
+    logger.error('Client error: ' + err.message);
+    onDisconnect(err);
+  });
+
+  client.on('end', (reason) => {
+    onDisconnect({ message: reason || 'end' });
+  });
+
+  client.on('kick_disconnect', (packet) => {
+    let reason = packet.reason;
+    try { reason = JSON.parse(reason).text || reason; } catch (_) {}
+    logger.warn('Kicked: ' + reason);
+    onDisconnect({ message: 'kicked: ' + reason });
+  });
+}
+
+function onDisconnect(reason) {
+  if (!client) return;  // guard double-fire
+  client = null;
+  stopStatusTicker();
+  const msg = (reason && reason.message) || String(reason) || 'Unknown reason';
+  logger.warn('Disconnected: ' + msg);
+
+  // Save partial session data if meaningful progress was made
+  if (sessionEntryPos !== null && currentPos !== null && currentPos < sessionEntryPos) {
+    learner.recordSession(sessionEntryMs, sessionEntryPos, currentPos);
+    learner.save();
+    logger.info('Partial session saved (#' + sessionEntryPos + ' -> #' + currentPos + ')');
   }
+  sessionEntryPos = null;
+  sessionEntryMs  = null;
+  currentPos      = null;
 
-  try {
-    client = mc.createClient(options);
-  } catch (err) {
-    logger.error(`Failed to create client: ${err.message}`);
-    scheduleReconnect();
+  const elapsed = Date.now() - startMs;
+  if (elapsed >= RUN_DURATION_MS) {
+    logger.info('Run duration of ' + MAX_DAYS + 'd reached — exiting.');
+    shutdown();
     return;
   }
 
-  client.on('session', (session) => {
-    const name = session?.selectedProfile?.name || config.mc.email;
-    logger.info(`Authenticated as ${name}`);
-  });
-
-  client.on('packet', (data, meta) => {
-    if (meta.name === 'playerlist_header') {
-      if (finishedQueue) return;
-
-      let pos = null;
-      try {
-        const text = extractChatText(data.header);
-        const match = text.match(/position in queue:\s*(\d+)/i);
-        if (match) pos = parseInt(match[1], 10);
-      } catch (e) {
-        if (!positionError) {
-          logger.warn('Could not parse queue position from tab header.');
-          positionError = true;
-        }
-      }
-
-      if (pos == null) return;
-
-      // First position of this session → start tracking
-      if (!sessionActive) {
-        learner.beginSession(pos);
-        sessionActive = true;
-        logger.info(`Queue entered at position #${pos}`);
-      }
-
-      // Record every position update
-      if (pos !== lastPosition) {
-        learner.recordSample(pos);
-        logger.info(`Position: #${pos}`);
-        lastPosition = pos;
-      }
-
-      // Close to the front → save data and re-queue
-      if (pos <= RELOG_THRESHOLD) {
-        logger.info(`Position #${pos} ≤ ${RELOG_THRESHOLD} — saving session and re-queueing`);
-        savePartialSession();
-        disconnect('Re-queueing for data collection');
-        // Don't wait for 'end' event here; scheduleReconnect is idempotent
-        scheduleReconnect();
-      }
-    }
-
-    if (meta.name === 'chat' || meta.name === 'system_chat' || meta.name === 'profileless_chat') {
-      if (finishedQueue) return;
-      let msg = '';
-      try {
-        const raw = data.content || data.formattedMessage || data.message || '';
-        msg = extractChatText(raw);
-      } catch { msg = ''; }
-
-      if (msg.includes('Connected to the server')) {
-        // Somehow made it through — save and disconnect immediately
-        finishedQueue = true;
-        logger.info('Queue finished (connected to server). Saving session and disconnecting.');
-        learner.recordCompletedSession();
-        sessionActive = false;
-        disconnect('Data collection only — not playing');
-        scheduleReconnect();
-      }
-    }
-  });
-
-  const onDisconnect = (reason) => {
-    // Guard against double-fire
-    if (!client) return;
-    client = null;
-    const msg = reason?.message || reason || 'Unknown';
-    logger.warn(`Disconnected: ${msg}`);
-    savePartialSession();
-    scheduleReconnect();
-  };
-
-  client.on('end', onDisconnect);
-  client.on('error', onDisconnect);
+  const delay = 30_000;
+  logger.info('Re-connecting in 30s ...');
+  reconnectTimer = setTimeout(connectToQueue, delay);
 }
 
+// ── Shutdown ──────────────────────────────────────────────────────────────────
 function shutdown() {
-  stopping = true;
-  if (reconnectTimer) clearTimeout(reconnectTimer);
-  savePartialSession();
-  disconnect('Shutting down');
-  const elapsed = Math.round((Date.now() - startedAt) / 3_600_000 * 10) / 10;
-  logger.info(`Queue learner finished after ${elapsed}h — ${learner.sessions.length} total sessions stored`);
+  stopStatusTicker();
+  if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+  if (client)         { client.end(); client = null; }
+  learner.save();
+  logger.info('queuelearner shut down.');
   process.exit(0);
 }
 
-// ─── Main ────────────────────────────────────────────────────────────────────
+process.on('SIGINT',  shutdown);
+process.on('SIGTERM', shutdown);
 
-logger.info('╔══════════════════════════════════════════════╗');
-logger.info('║         2Bored2Tolerate Queue Learner        ║');
-logger.info('╠══════════════════════════════════════════════╣');
-logger.info(`║  Duration:  ${String(runDays).padEnd(4)} days                        ║`);
-logger.info(`║  Relog at:  position ≤ ${String(RELOG_THRESHOLD).padEnd(4)}                  ║`);
-logger.info(`║  Server:    ${String(config.server.host).padEnd(30).slice(0, 30)}    ║`);
-logger.info(`║  Account:   ${String(config.mc.email || '(none)').padEnd(30).slice(0, 30)}    ║`);
-logger.info(`║  Sessions:  ${String(learner.sessions.length).padEnd(4)} already stored             ║`);
-logger.info('╚══════════════════════════════════════════════╝');
-
-// Graceful shutdown
-process.on('SIGINT', () => { logger.info('SIGINT received'); shutdown(); });
-process.on('SIGTERM', () => { logger.info('SIGTERM received'); shutdown(); });
+// ── Start ─────────────────────────────────────────────────────────────────────
+logger.info('=== queuelearner starting ===');
+logger.info('Account : ' + config.mc.email);
+logger.info('Server  : ' + config.server.host + ':' + config.server.port);
+logger.info('Run for : ' + MAX_DAYS + 'd max, relog at <= #' + RELOG_THRESHOLD);
+logger.info('Sessions: ' + learner.sessions.length + ' loaded');
 
 connectToQueue();

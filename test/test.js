@@ -286,10 +286,11 @@ test('ETALearner getHistoricalRate uses similar time context', () => {
       positionsPerHour: 100,
     });
   }
-  const rate = eta._getHistoricalRate(now);
-  assert(rate !== null, 'Should have a historical rate');
-  assert(rate > 0, 'Rate should be positive');
-  assert(Math.abs(rate - 100) < 10, `Rate ${rate} should be close to 100`);
+  const result = eta._getHistoricalRate(now);
+  assert(result !== null, 'Should have a historical rate');
+  assert(result.rate > 0, 'Rate should be positive');
+  assert(Math.abs(result.rate - 100) < 10, `Rate ${result.rate} should be close to 100`);
+  assert(result.effectiveSessions > 0, 'effectiveSessions should be positive');
 });
 
 test('ETALearner caps sessions at MAX_SESSIONS', () => {
