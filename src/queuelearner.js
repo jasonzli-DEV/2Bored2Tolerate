@@ -106,6 +106,35 @@ function stopStatusTicker() {
   if (statusTimer) { clearInterval(statusTimer); statusTimer = null; }
 }
 
+// Recursively extract plain text from MC 1.21+ NBT chat components (mirrors proxy.js)
+function extractChatText(component) {
+  if (component == null) return '';
+  if (typeof component === 'string') {
+    try { return extractChatText(JSON.parse(component)); } catch { return component; }
+  }
+  if (typeof component !== 'object') return String(component);
+  if (component.type === 'compound' && component.value) return extractChatText(component.value);
+  if (component.type === 'string' && typeof component.value === 'string') return component.value;
+  if (component.type === 'list' && component.value) {
+    const inner = component.value;
+    if (Array.isArray(inner)) return inner.map(extractChatText).join('');
+    if (inner.value && Array.isArray(inner.value)) return inner.value.map(extractChatText).join('');
+    return extractChatText(inner);
+  }
+  let result = '';
+  if ('text' in component) result += extractChatText(component.text);
+  if (component.translate && !('text' in component)) result += extractChatText(component.translate);
+  if (component.extra) {
+    if (Array.isArray(component.extra)) { for (const c of component.extra) result += extractChatText(c); }
+    else result += extractChatText(component.extra);
+  }
+  if (component.with) {
+    if (Array.isArray(component.with)) { for (const c of component.with) result += extractChatText(c); }
+    else result += extractChatText(component.with);
+  }
+  return result;
+}
+
 function saveSession(entryMs, entryPos, exitPos) {
   const exitMs = Date.now();
   const durationMs = exitMs - entryMs;
@@ -148,50 +177,64 @@ function connectToQueue() {
     logger.info('Logged in — waiting for queue position ...');
   });
 
-  client.on('chat', (packet) => {
-    // 2b2t sends queue position in chat as JSON text; parse it roughly
-    let raw = '';
-    try { raw = JSON.parse(packet.message).text || ''; } catch (_) { raw = packet.message || ''; }
+  client.on('packet', (data, meta) => {
+    // ── Tab-list header: contains "Position in queue: N" ──────────────────────
+    if (meta.name === 'playerlist_header') {
+      let headerText = '';
+      try { headerText = extractChatText(data.header); } catch (_) {}
 
-    const posMatch = raw.match(/Position in queue: (\d+)/i) ||
-                     raw.match(/queue position[:\s]+(\d+)/i);
-    if (!posMatch) return;
+      const match = headerText.match(/position in queue:\s*(\d+)/i);
+      if (!match) return;
 
-    const pos = parseInt(posMatch[1], 10);
-    currentPos = pos;
+      const pos = parseInt(match[1], 10);
+      currentPos = pos;
 
-    if (sessionEntryPos === null) {
-      // First position reading this session — record queue entry
-      sessionEntryPos = pos;
-      sessionEntryMs  = Date.now();
-      startStatusTicker();
+      if (sessionEntryPos === null) {
+        sessionEntryPos = pos;
+        sessionEntryMs  = Date.now();
+        startStatusTicker();
+        const hist    = learner._getHistoricalRate(new Date());
+        const histStr = hist
+          ? '  |  historical ~' + Math.round(hist.rate) + ' pos/hr (' +
+            Math.round(hist.effectiveSessions) + ' eff. sessions)'
+          : '';
+        logger.info('Queue entered at #' + pos + histStr);
+        return;
+      }
 
-      const hist    = learner._getHistoricalRate(new Date());
-      const histStr = hist
-        ? '  |  historical ~' + Math.round(hist.rate) + ' pos/hr (' +
-          Math.round(hist.effectiveSessions) + ' eff. sessions)'
-        : '';
-      logger.info('Queue entered at #' + pos + histStr);
-      return;
+      const rate = sessionRate();
+      const rs   = rateStr(rate, pos);
+      logger.info('Position: #' + pos + (rs ? '  |  ' + rs : ''));
+
+      if (pos <= RELOG_THRESHOLD) {
+        const durationMs = Date.now() - sessionEntryMs;
+        const r          = sessionRate();
+        const summary    = r
+          ? '~' + hm(durationMs) + ' session, ~' + Math.round(r) + ' pos/hr'
+          : '~' + hm(durationMs) + ' session';
+        logger.info('Position #' + pos + ' <= ' + RELOG_THRESHOLD +
+          ' — saving session and re-queueing  (' + summary + ')');
+        saveSession(sessionEntryMs, sessionEntryPos, pos);
+        stopStatusTicker();
+        sessionEntryPos = null;
+        sessionEntryMs  = null;
+        client.end();
+      }
+      return; // end playerlist_header
     }
 
-    const rate = sessionRate();
-    const rs   = rateStr(rate, pos);
-    logger.info('Position: #' + pos + (rs ? '  |  ' + rs : ''));
-
-    if (pos <= RELOG_THRESHOLD) {
-      const durationMs = Date.now() - sessionEntryMs;
-      const r          = sessionRate();
-      const summary    = r
-        ? '~' + hm(durationMs) + ' session, ~' + Math.round(r) + ' pos/hr'
-        : '~' + hm(durationMs) + ' session';
-      logger.info('Position #' + pos + ' <= ' + RELOG_THRESHOLD +
-        ' — saving session and re-queueing  (' + summary + ')');
-      saveSession(sessionEntryMs, sessionEntryPos, pos);
-      stopStatusTicker();
-      sessionEntryPos = null;
-      sessionEntryMs  = null;
-      client.end();
+    // ── Chat messages ───────────────────────────────────────────────────────
+    if (meta.name === 'chat' || meta.name === 'system_chat' || meta.name === 'profileless_chat') {
+      let text = '';
+      try { text = extractChatText(data.content || data.formattedMessage || data.message || ''); } catch (_) {}
+      if (text.includes('Connected to the server')) {
+        logger.info('Connected to the server — session done (position 0).');
+        saveSession(sessionEntryMs, sessionEntryPos, 0);
+        stopStatusTicker();
+        sessionEntryPos = null;
+        sessionEntryMs  = null;
+        client.end();
+      }
     }
   });
 
