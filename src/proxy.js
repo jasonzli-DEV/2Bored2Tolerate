@@ -1,6 +1,7 @@
 // src/proxy.js - Core Minecraft proxy and queue management
 const EventEmitter = require('events');
 const mc = require('minecraft-protocol');
+const nbt = require('prismarine-nbt');
 const mcproxy = require('@rob9315/mcproxy');
 const { DateTime } = require('luxon');
 const { version: APP_VERSION } = require('../package.json');
@@ -528,6 +529,38 @@ class ProxyManager extends EventEmitter {
     this.server.on('login', (newProxyClient) => {
       this._log(`Player connected: ${newProxyClient.username}`);
 
+      // Helper: properly kick a client during the login → configuration transition.
+      //
+      // WHY: minecraft-protocol's loginClient() queues login_success into the
+      // socket write buffer BEFORE emitting 'login'.  By the time the player's
+      // Minecraft 1.21.4 client receives any subsequent packet from us, it has
+      // already transitioned CLIENT-SIDE to CONFIGURATION state (login_success
+      // triggers that transition).  Calling newProxyClient.end() right now would
+      // send the LOGIN-state disconnect (packet ID 0x00).  In CONFIGURATION state
+      // packet 0x00 = cookie_request → "Failed to decode packet clientbound
+      // minecraft cookie_request" crash on the player's client.
+      //
+      // FIX: remove minecraft-protocol's internal login_acknowledged handler
+      // (which would start the registry-data configuration phase), replace it
+      // with our own that sets the server-side state to CONFIGURATION and sends
+      // a proper configuration-state disconnect (packet ID 0x02) instead.
+      const kickClient = (msg) => {
+        newProxyClient.removeAllListeners('login_acknowledged');
+        newProxyClient.once('login_acknowledged', () => {
+          try {
+            // Activate CONFIGURATION serializer so client.write() picks packet 0x02.
+            newProxyClient.state = mc.states.CONFIGURATION;
+            // 1.20.3+ requires NBT-encoded chat components; older versions use JSON.
+            const reason = newProxyClient.supportFeature?.('chatPacketsUseNbtComponents')
+              ? nbt.comp({ text: nbt.string(msg) })
+              : JSON.stringify({ text: msg });
+            newProxyClient.write('disconnect', { reason });
+          } catch (_) { /* ignore write errors if socket already closing */ }
+          // Close the stream + socket (original client.end without packet sending).
+          newProxyClient._end(msg);
+        });
+      };
+
       // Block connection while 2b2t queue is not finished.
       // Attempting to link mid-queue causes the 2b2t server's cached
       // configuration-phase packets (e.g. cookie_request) to be replayed to
@@ -535,7 +568,7 @@ class ProxyManager extends EventEmitter {
       if (!this.finishedQueue) {
         const pos = this.state.queuePlace !== 'None' ? `#${this.state.queuePlace}` : '?';
         const eta = this.state.eta !== 'None' ? this.state.eta : '?';
-        newProxyClient.end(
+        kickClient(
           `§cStill waiting in the 2b2t queue!\n\n` +
           `§7Position: §e${pos}\n` +
           `§7ETA: §e${eta}\n\n` +
@@ -547,7 +580,7 @@ class ProxyManager extends EventEmitter {
 
       // Whitelist check
       if (config.proxy.whitelist && this.client && this.client.uuid !== newProxyClient.uuid) {
-        newProxyClient.end('Not whitelisted! Use the same account as the proxy.');
+        kickClient('Not whitelisted! Use the same account as the proxy.');
         this._log(`Rejected ${newProxyClient.username}: not whitelisted`, 'warn');
         return;
       }
