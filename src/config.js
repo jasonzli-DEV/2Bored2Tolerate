@@ -1,6 +1,6 @@
 // src/config.js - Configuration loaded from .env
 const path = require('path');
-require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
+require('dotenv').config({ path: path.join(__dirname, '..', '.env'), override: true });
 
 /** Parse an integer from a string, returning the fallback if NaN */
 const intOr = (str, fallback) => { const n = parseInt(str, 10); return Number.isNaN(n) ? fallback : n; };
@@ -19,7 +19,7 @@ const config = {
   // Target Server
   server: {
     host: process.env.SERVER_HOST || '2b2t.org',
-    port: intOr(process.env.MC_SERVER_PORT ?? process.env.SERVER_PORT, 25565),
+    port: intOr(process.env.SERVER_PORT, 25565),
   },
 
   // Local Proxy Server
