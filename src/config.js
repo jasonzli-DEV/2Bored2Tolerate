@@ -19,7 +19,7 @@ const config = {
   // Target Server
   server: {
     host: process.env.SERVER_HOST || '2b2t.org',
-    port: intOr(process.env.SERVER_PORT, 25565),
+    port: intOr(process.env.MC_SERVER_PORT ?? process.env.SERVER_PORT, 25565),
   },
 
   // Local Proxy Server
