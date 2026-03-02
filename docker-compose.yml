@@ -3,8 +3,8 @@ services:
     build: .
     container_name: 2bored2tolerate
     ports:
-      - "8080:8080"
-      - "25565:25565"
+      - "${WEB_PORT:-8080}:${WEB_PORT:-8080}"
+      - "${PROXY_PORT:-25565}:${PROXY_PORT:-25565}"
     env_file: .env
     restart: unless-stopped
     volumes:

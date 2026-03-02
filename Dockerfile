@@ -14,6 +14,7 @@ RUN npm install --omit=dev
 COPY . .
 
 # Expose ports: web dashboard + minecraft proxy
+# Actual port numbers controlled by WEB_PORT / PROXY_PORT in .env
 EXPOSE 8080/tcp
 EXPOSE 25565/tcp
 

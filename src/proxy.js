@@ -2,6 +2,7 @@
 const EventEmitter = require('events');
 const mc = require('minecraft-protocol');
 const mcproxy = require('@rob9315/mcproxy');
+const nbt = require('prismarine-nbt');
 const { DateTime } = require('luxon');
 const { version: APP_VERSION } = require('../package.json');
 const everpolate = require('everpolate');
@@ -525,49 +526,73 @@ class ProxyManager extends EventEmitter {
       favicon: faviconBase64 ? `data:image/png;base64,${faviconBase64}` : undefined,
     });
 
-    // 'login' fires while the client is in LOGIN state — before the MC 1.21.4
-    // configuration handshake runs.  Any end() call here sends a LOGIN-state
-    // disconnect (packet ID 0x00).  The client already transitioned client-side
-    // to CONFIGURATION state when it received login_success, so it decodes 0x00
-    // as cookie_request and crashes: "Failed to decode packet cookie_request".
+    // MC 1.21.4 login/configuration flow:
+    //   1. Server sends login_success → 'login' event fires (client state: LOGIN)
+    //   2. Client receives login_success, transitions client-side to CONFIGURATION,
+    //      sends login_acknowledged
+    //   3. mc-protocol's onClientLoginAck: state → CONFIGURATION, sends registry_data,
+    //      finish_configuration → client acks → state → PLAY, emits 'playerJoin'
     //
-    // We therefore do NOTHING here except log.  All player logic (queue check,
-    // whitelist, linking) happens in 'playerJoin', which fires only after the
-    // full configuration phase completes and the client is in PLAY state.
-    // minecraft-protocol's patched end() in PLAY state correctly sends
-    // kick_disconnect (play-state 0x1A / nbt-reason) — no crash.
+    // Problem: mc-protocol's built-in registry_data is incomplete/incompatible with
+    // MC 1.21.4 (missing tags, wrong biome/enchantment formats) → client crashes
+    // with "Failed to load registries". And calling end() in LOGIN state sends
+    // packet 0x00 which the already-CONFIGURATION client decodes as cookie_request.
+    //
+    // Solution for kicks: intercept login_acknowledged BEFORE mc-protocol's handler,
+    // manually transition to CONFIGURATION state, and send a proper CONFIGURATION
+    // disconnect (packet 0x02 / anonymousNbt reason). No registry data is ever sent.
     this.server.on('login', (newProxyClient) => {
       this._log(`Player connecting: ${newProxyClient.username}`);
-    });
 
-    // 'playerJoin' fires when the client has finished the MC 1.21.4 configuration
-    // phase and is now in PLAY state.  end() here sends kick_disconnect correctly.
-    this.server.on('playerJoin', (newProxyClient) => {
-      this._log(`Player entered play state: ${newProxyClient.username}`);
+      // Determine if this player should be kicked
+      let kickReason = null;
 
-      // Block connection while 2b2t queue is not finished.
-      // Attempting to link mid-queue causes the 2b2t server's cached
-      // configuration-phase packets (e.g. cookie_request) to be replayed to
-      // the client in play-state, triggering a DecoderException crash loop.
       if (!this.finishedQueue) {
         const pos = this.state.queuePlace !== 'None' ? `#${this.state.queuePlace}` : '?';
         const eta = this.state.eta !== 'None' ? this.state.eta : '?';
-        newProxyClient.end(
+        kickReason =
           `§cStill waiting in the 2b2t queue!\n\n` +
           `§7Position: §e${pos}\n` +
           `§7ETA: §e${eta}\n\n` +
-          `§7Connect again after the queue finishes.`
-        );
-        this._log(`${newProxyClient.username} tried to connect while in queue (pos ${pos}) — kicked`);
+          `§7Connect again after the queue finishes.`;
+      } else if (config.proxy.whitelist && this.client && this.client.uuid !== newProxyClient.uuid) {
+        kickReason = 'Not whitelisted! Use the same account as the proxy.';
+      }
+
+      if (kickReason) {
+        // Remove mc-protocol's login_acknowledged handler so it never sends
+        // broken registry_data or finish_configuration.
+        newProxyClient.removeAllListeners('login_acknowledged');
+
+        // When the client transitions to CONFIGURATION, send a proper disconnect.
+        newProxyClient.once('login_acknowledged', () => {
+          try {
+            // Swap server-side serializer to CONFIGURATION (creates new
+            // Serializer + FullPacketParser for config-state packets).
+            newProxyClient.state = 'configuration';
+
+            // CONFIGURATION disconnect is packet 0x02 with anonymousNbt reason.
+            const reason = nbt.comp({ text: nbt.string(kickReason) });
+            newProxyClient.write('disconnect', { reason });
+          } catch (err) {
+            this._log(`Error sending config disconnect: ${err.message}`, 'error');
+          }
+          // Close the underlying socket (original Client.end before server.js override).
+          newProxyClient._end(kickReason);
+        });
+
+        this._log(`${newProxyClient.username} will be kicked in CONFIGURATION state`);
         return;
       }
 
-      // Whitelist check
-      if (config.proxy.whitelist && this.client && this.client.uuid !== newProxyClient.uuid) {
-        newProxyClient.end('Not whitelisted! Use the same account as the proxy.');
-        this._log(`Rejected ${newProxyClient.username}: not whitelisted`, 'warn');
-        return;
-      }
+      // Allowed player — mc-protocol's login_acknowledged handler proceeds
+      // with the configuration handshake and eventually emits 'playerJoin'.
+    });
+
+    // 'playerJoin' fires after the full LOGIN → CONFIGURATION → PLAY handshake.
+    // Only used for linking allowed players — all kicks happen above in 'login'.
+    this.server.on('playerJoin', (newProxyClient) => {
+      this._log(`Player entered play state: ${newProxyClient.username}`);
 
       // Forward player packets to server
       newProxyClient.on('packet', (_, meta, rawData) => {
