@@ -443,10 +443,17 @@ class ProxyManager extends EventEmitter {
         antiAfkActive: false,
       });
 
-      if (!this.stoppedByPlayer && config.reconnectOnError) {
-        this._log('Reconnecting in 30 seconds...');
-        this._updateState({ doing: 'reconnecting' });
-        this.reconnectTimer = setTimeout(() => this._reconnect(), 30000);
+      if (!this.stoppedByPlayer) {
+        if (this.finishedQueue && this.state.restartQueue) {
+          // Bot was on the server and auto-restart is enabled — rejoin the queue
+          this._log('Kicked from server, restarting queue in 5 seconds...');
+          this._updateState({ doing: 'reconnecting' });
+          this.reconnectTimer = setTimeout(() => this._reconnect(), 5000);
+        } else if (config.reconnectOnError) {
+          this._log('Reconnecting in 30 seconds...');
+          this._updateState({ doing: 'reconnecting' });
+          this.reconnectTimer = setTimeout(() => this._reconnect(), 30000);
+        }
       }
     };
 
@@ -470,13 +477,6 @@ class ProxyManager extends EventEmitter {
       fs.writeFile(QUEUE_DATA_PATH, JSON.stringify(this.queueData), 'utf-8', (err) => {
         if (err) logger.error(`Failed to save queue data: ${err.message}`);
       });
-    }
-
-    if (this.state.restartQueue && !this.proxyClient) {
-      this._log('No client connected and restart enabled. Restarting queue...');
-      this._cleanup();
-      this._reconnect();
-      return;
     }
 
     this.finishedQueue = true;
