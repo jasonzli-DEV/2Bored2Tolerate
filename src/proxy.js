@@ -299,6 +299,13 @@ class ProxyManager extends EventEmitter {
     });
 
     this.client.on('packet', (data, meta) => {
+      // Fallback queue completion: server transfer sends a play-state login packet
+      if (meta.name === 'login' && !this.finishedQueue) {
+        this._log('Server transfer detected (login packet in PLAY state)');
+        this._handleQueueFinished();
+        return;
+      }
+
       switch (meta.name) {
         case 'playerlist_header': {
           if (this.finishedQueue) break;
@@ -319,6 +326,14 @@ class ProxyManager extends EventEmitter {
               this._log('Could not read queue position from tab header.', 'warn');
               positionError = true;
             }
+          }
+
+          // Fallback: if we were tracking a position but it disappeared from the
+          // tab header, the queue is likely done (server transferred us).
+          if (positionInQueue === 'None' && lastQueuePlace !== 'None') {
+            this._log('Queue position disappeared from tab header — assuming queue finished');
+            this._handleQueueFinished();
+            break;
           }
 
           if (positionInQueue !== 'None') {
@@ -449,8 +464,13 @@ class ProxyManager extends EventEmitter {
           this._log('Kicked from server, restarting queue in 5 seconds...');
           this._updateState({ doing: 'reconnecting' });
           this.reconnectTimer = setTimeout(() => this._reconnect(), 5000);
+        } else if (this.finishedQueue && config.reconnectOnError) {
+          // Kicked from actual server but auto-restart is off — still reconnect per reconnectOnError
+          this._log('Kicked from 2b2t server (RESTART_QUEUE=false), rejoining queue in 30 seconds...');
+          this._updateState({ doing: 'reconnecting' });
+          this.reconnectTimer = setTimeout(() => this._reconnect(), 30000);
         } else if (config.reconnectOnError) {
-          this._log('Reconnecting in 30 seconds...');
+          this._log('Disconnected during queue, reconnecting in 30 seconds...');
           this._updateState({ doing: 'reconnecting' });
           this.reconnectTimer = setTimeout(() => this._reconnect(), 30000);
         }
@@ -647,6 +667,8 @@ class ProxyManager extends EventEmitter {
       this.antiAfk.start();
       this.antiAfkPending = true;
       this._updateState({ antiAfkActive: true });
+    } else {
+      this._log('Anti-AFK could not start: mineflayer bot instance not available on conn', 'warn');
     }
   }
 
