@@ -254,6 +254,8 @@ class ProxyManager extends EventEmitter {
   _cleanup() {
     this.finishedQueue = false;
     this.notificationSent = false;
+    this.queueStartPlace = null;
+    this.queueStartTime = null;
 
     if (this.antiAfk) {
       this.antiAfk.stop();
