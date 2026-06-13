@@ -299,8 +299,9 @@ class ProxyManager extends EventEmitter {
     });
 
     this.client.on('packet', (data, meta) => {
-      // Fallback queue completion: server transfer sends a play-state login packet
-      if (meta.name === 'login' && !this.finishedQueue) {
+      // Fallback queue completion: server transfer sends a play-state login packet.
+      // Guard with queueStartPlace so we don't fire on the initial queue server join.
+      if (meta.name === 'login' && !this.finishedQueue && this.queueStartPlace !== null) {
         this._log('Server transfer detected (login packet in PLAY state)');
         this._handleQueueFinished();
         return;
