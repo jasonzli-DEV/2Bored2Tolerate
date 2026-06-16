@@ -28,6 +28,17 @@ class ProxyManager extends EventEmitter {
     this.proxyClient = null;
     this.antiAfk = null;
 
+    // Real registry_data entries captured from 2b2t during the bot's own
+    // CONFIGURATION handshake, keyed by registry id (e.g.
+    // 'minecraft:enchantment'). minecraft-data's bundled snapshot is known
+    // broken/incomplete for several registries (enchantment in particular -
+    // both unparseable AND, even when patched around, missing the specific
+    // numeric indices real entities' equipped items reference, which crashes
+    // clients trying to decode other players'/mobs' gear). The real data
+    // from 2b2t is guaranteed format- and index-correct; prefer it over our
+    // curated/patched fallback wherever available (see _setupLocalServer).
+    this._realRegistryData = {};
+
     // Queue tracking
     this.finishedQueue = false;
     this.stoppedByPlayer = false;
@@ -184,6 +195,22 @@ class ProxyManager extends EventEmitter {
       return;
     }
 
+    // Band-aid until we have the real enchantment registry from 2b2t's own
+    // handshake (captured into _realRegistryData and preferred in
+    // _setupLocalServer once available): decoding any equipped item with an
+    // enchantment crashes the client without it. Drop equipment updates
+    // relayed from the real server here; the matching gap in mcproxy's own
+    // initial-join packet construction is patched directly in
+    // node_modules/@rob9315/mcproxy/lib/packets.js (entity_equipment is
+    // skipped entirely there too). Note: the wire/vanilla packet name is
+    // "set_equipment", but minecraft-data/minecraft-protocol's internal name
+    // for it is "entity_equipment".
+    this.conn.toClientDefaultMiddleware = [
+      (packetData) => {
+        if (packetData.meta?.name === 'entity_equipment') return false;
+      },
+    ];
+
     // Attach error listener immediately to catch async auth/connection errors
     this.client.on('error', (err) => {
       // Will be handled by _setupQueueHandling's onDisconnect once attached
@@ -301,6 +328,14 @@ class ProxyManager extends EventEmitter {
     });
 
     this.client.on('packet', (data, meta) => {
+      // Capture 2b2t's real registry_data during the bot's own CONFIGURATION
+      // handshake - this is the actual, correct data (right format, right
+      // indices) as opposed to our curated/patched fallback. See comment on
+      // _realRegistryData in the constructor.
+      if (meta.name === 'registry_data' && meta.state === 'configuration' && data?.id) {
+        this._realRegistryData[data.id] = data;
+      }
+
       // Fallback queue completion: server transfer sends a play-state login packet.
       // Guard with queueStartPlace so we don't fire on the initial queue server join.
       if (meta.name === 'login' && !this.finishedQueue && this.queueStartPlace !== null) {
@@ -538,6 +573,52 @@ class ProxyManager extends EventEmitter {
       }
     }
 
+    // mc-protocol's default registryCodec fallback (minecraft-data's bundled
+    // dimensionCodec snapshot) is stale/incomplete for several registries
+    // (e.g. enchantment, most of worldgen/biome) and crashes real 1.21.4
+    // clients with "Failed to load registries" parse errors. Most registries
+    // are fine left empty/absent (the client falls back to its own built-in
+    // defaults), but vanilla hard-requires dimension_type, painting_variant,
+    // and wolf_variant to be non-empty - and wolf_variant's spawn-biome
+    // conditions in turn reference specific named biomes that must exist in
+    // worldgen/biome. Sending just those (verified not part of the broken
+    // set) from the bundled snapshot satisfies all of that without
+    // resurrecting the parse-error registries/biomes.
+    const mcData = require('minecraft-data')(config.mc.version);
+    const dimensionCodec = mcData.loginPacket?.dimensionCodec || {};
+    const registryCodec = {};
+    for (const key of ['minecraft:dimension_type', 'minecraft:painting_variant', 'minecraft:wolf_variant', 'minecraft:damage_type']) {
+      if (dimensionCodec[key]) registryCodec[key] = dimensionCodec[key];
+    }
+    const biomeRegistry = dimensionCodec['minecraft:worldgen/biome'];
+    if (biomeRegistry) {
+      // Send the full biome set, not just whichever ones the world happens to
+      // reference - vanilla world init hard-requires specific biomes to
+      // exist (plains, etc.) depending on spawn/dimension, so cherry-picking
+      // a handful just shifts which "Missing element" shows up next.
+      registryCodec['minecraft:worldgen/biome'] = {
+        id: 'minecraft:worldgen/biome',
+        // The bundled snapshot's effects.music sub-field uses an outdated
+        // sound-reference shape and fails to parse on real 1.21.4 clients;
+        // strip it (cosmetic-only - biomes without it parse fine).
+        entries: biomeRegistry.entries.map((e) => {
+          const clone = JSON.parse(JSON.stringify(e));
+          const effects = clone.value?.value?.effects?.value;
+          if (effects) delete effects.music;
+          return clone;
+        }),
+      };
+    }
+
+    // Prefer the real data captured from 2b2t's own CONFIGURATION handshake
+    // (see _realRegistryData) over the curated/patched fallback above,
+    // wherever we have it - it's guaranteed correct, including the specific
+    // numeric indices needed to decode other entities' equipped item
+    // enchantments (which our curated enchantment-less fallback can't).
+    for (const [id, entry] of Object.entries(this._realRegistryData)) {
+      registryCodec[id] = entry;
+    }
+
     this.server = mc.createServer({
       'online-mode': config.proxy.onlineMode,
       encryption: true,
@@ -547,6 +628,7 @@ class ProxyManager extends EventEmitter {
       'max-players': 1,
       motd: 'Waiting in queue...',
       favicon: faviconBase64 ? `data:image/png;base64,${faviconBase64}` : undefined,
+      registryCodec,
     });
 
     // MC 1.21.4 login/configuration flow:
@@ -608,8 +690,43 @@ class ProxyManager extends EventEmitter {
         return;
       }
 
-      // Allowed player — mc-protocol's login_acknowledged handler proceeds
-      // with the configuration handshake and eventually emits 'playerJoin'.
+      // Allowed player — mc-protocol's login_acknowledged handler sends
+      // registry_data from the curated registryCodec built in
+      // _setupLocalServer (dimension_type/painting_variant/wolf_variant/a
+      // handful of biomes - see comments there) and then finish_configuration.
+      //
+      // wolf_variant's spawn conditions also reference biome tags
+      // (is_badlands/is_jungle/is_savanna) that aren't bound by any
+      // registry_data entry - tags are a separate 'tags' packet that
+      // mc-protocol's default flow never sends at all. Inject one (with
+      // empty membership - just needs to exist) before finish_configuration.
+      newProxyClient.prependOnceListener('login_acknowledged', () => {
+        try {
+          // We run before mc-protocol's own login_acknowledged handler (which
+          // normally sets this), so the serializer is still LOGIN-state
+          // unless we flip it ourselves first - otherwise this write gets
+          // serialized with the wrong protocol definition and corrupts the
+          // stream (manifests downstream as garbled/truncated packets).
+          newProxyClient.state = 'configuration';
+          newProxyClient.write('tags', {
+            tags: [
+              {
+                tagType: 'minecraft:worldgen/biome',
+                tags: [
+                  { tagName: 'minecraft:is_badlands', entries: [] },
+                  { tagName: 'minecraft:is_jungle', entries: [] },
+                  { tagName: 'minecraft:is_savanna', entries: [] },
+                ],
+              },
+            ],
+          });
+        } catch (err) {
+          this._log(`Error sending tags packet: ${err.message}`, 'error');
+        }
+      });
+      // mc-protocol's own login_acknowledged handler (registered earlier in
+      // login.js) runs next and proceeds with its configuration handshake,
+      // eventually emitting 'playerJoin'.
     });
 
     // 'playerJoin' fires after the full LOGIN → CONFIGURATION → PLAY handshake.
